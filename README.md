@@ -41,3 +41,16 @@ XFEL Data (/raw)
                   └► classification (...)
                      └► 3D EMC (...)
 ```
+
+## Autologger
+Reads from facility api, events files and job scripts, writes to `run_table.json` then posts to a google doc.
+
+Script: `online/autologger/autologger.py`
+![autologger.py](images/autologger.png)
+
+## Autoprocessor
+Reads from `run_table.json` and automatically runs jobs based on conditionals.
+
+Status of call (not run/running/error/finished) are writen to run table by the autologger.
+
+Script: `online/autoprocessor/autoprocessor.py'
