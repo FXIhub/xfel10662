@@ -14,9 +14,9 @@ Analysis files   : /gpfs/exfel/exp/SPB/.../scratch/<user>/
 ## Pipeline
 ```text
 XFEL Data (/raw)
-   └► facility calibrations (/proc/r*/CORR*)           
-   └► per-cell powder (/scratch/powder/r*_powder.h5)           
-     └► per-cell mask  (/scratch/det/r*_mask.h5)           
+   └► facility calibrations (/proc/r*/CORR*)
+   └► per-cell powder (/scratch/powder/r*_powder.h5)
+     └► per-cell mask  (/scratch/det/r*_mask.h5)
         └► event info (/scratch/events/r*_events.h5)
           └► per-cell per-cell powder hits non-hits (/scratch/powder/r*_powder.h5)
             └► background estimation (events file)
@@ -32,10 +32,11 @@ XFEL Data (/raw)
 These are located in `offline/`
 ```text
 XFEL Data (/raw)
-   └► facility calibrations (automatically triggered by EuXFEL)           
+   └► facility calibrations (automatically triggered by EuXFEL)
       └► VDS files (submit_vds.sh)
          └► event info (submit_events.sh)
             └► cxi files for hits (submit_cxi.sh)
+               ├► fit to precalculated pdb simulations (...)
                ├► static EMC (...)
                └► 2D EMC (...)
                   └► classification (...)
