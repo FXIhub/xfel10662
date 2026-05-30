@@ -20,8 +20,15 @@ from constants import PREFIX
 #PREFIX='/gpfs/exfel/exp/SPB/202405/p007927'
 geom_fnam=f'../geom/r0600.geom'
 
-DATA_PATH = 'entry_1/instrument_1/detector_1/data'
-MASK_PATH = 'entry_1/instrument_1/detector_1/good_pixels'
+DATA_PATH  = 'entry_1/instrument_1/detector_1/data'
+MASK_PATH  = 'entry_1/instrument_1/detector_1/mask'
+SCORE_PATH = 'entry_1/instrument_1/detector_1/score'
+
+
+def load_score(f, name):
+    """Return the named per-shot score dataset under detector_1/score, or None."""
+    path = f'{SCORE_PATH}/{name}'
+    return f[path] if path in f else None
 
 def parse_cmdline_args():
     parser = argparse.ArgumentParser(description='view shots from saved hits in cxi files')
@@ -159,33 +166,30 @@ else :
     args.cxi  = f'{PREFIX}/scratch/saved_hits/{args.cxi}'
 
 
-with h5py.File(args.cxi) as f:
-    xyz = f['/entry_1/instrument_1/detector_1/xyz_map'][()]
-
-    # also load powder
-    if '/entry_1/instrument_1/detector_1/powder' in f :
-        powder = f['/entry_1/instrument_1/detector_1/powder'][()]
-    else :
-        powder = np.zeros(xyz.shape[1:], dtype = float)
-
-
 f = h5py.File(args.cxi)
 data = f[DATA_PATH]
 
+if '/entry_1/instrument_1/detector_1/data_white' in f :
+    powder = f['/entry_1/instrument_1/detector_1/data_white'][()]
+else :
+    powder = np.zeros(data.shape[1:], dtype = float)
+
 if args.apply_mask:
     print('getting mask from', MASK_PATH)
-    mask = f[MASK_PATH][()]
+    # CXI 32-bit mask: 0 = good, any non-zero bit = bad
+    mask = (f[MASK_PATH][()] == 0).astype(np.uint8)
 else :
     mask = 1
 
 if args.litpixels :
-    #with h5py.File(args.cxi) as f:
-    if '/entry_1/instrument_1/detector_1/hit_sigma' in f :
-        litpixels = f['/entry_1/instrument_1/detector_1/hit_sigma'][()]
-    elif '/entry_1/instrument_1/detector_1/hit_score' in f :
-        litpixels = f['/entry_1/instrument_1/detector_1/hit_score'][()]
-    else :
-        litpixels = f['/entry_1/instrument_1/detector_1/lit_pixels'][()]
+    litpixels = None
+    for name in ('hit_sigma', 'hit_score', 'lit_pixels'):
+        col = load_score(f, name)
+        if col is not None:
+            litpixels = col[()]
+            break
+    if litpixels is None:
+        raise RuntimeError('no hit_sigma/hit_score/lit_pixels column in detector_1/score')
     sorted_indices    = np.argsort(litpixels)[::-1]
     litpix    = litpixels[sorted_indices]
     sort = True

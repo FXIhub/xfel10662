@@ -7,7 +7,7 @@ source /etc/profile.d/modules.sh
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 PARENT_DIR=$(dirname $SCRIPT_DIR)
-source $PARENT_DIR/source_this_at_euxfel
+source $PARENT_DIR/source_at_maxwell.sh
 
 cd $SCRIPT_DIR
 
@@ -25,7 +25,7 @@ sbatch <<EOT
 #SBATCH --partition=upex
 
 source /etc/profile.d/modules.sh
-source $PARENT_DIR/source_this_at_euxfel
+source $PARENT_DIR/source_at_maxwell.sh
 
 set -e
 
