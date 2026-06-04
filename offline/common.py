@@ -11,7 +11,7 @@ def get_geom(run_no):
 
 def make_geom(run_no):
     out_fnam = root.joinpath(f'geom/r{run_no:04}.geom').resolve()
-    ref_fnam = root.joinpath('geom/agipd_p008316_r0024_v04.geom').resolve()
+    ref_fnam = root.joinpath('geom/agipd_12cm_260505.geom').resolve()
 
     if not os.path.exists(out_fnam) :
         from extra_geom import AGIPD_1MGeometry

@@ -19,7 +19,8 @@ export PARTITION=upex
 # for more than 6 months after beamtime
 #export PARTITION=allcpu
 #export PARTITION=allgpu
-export RESERVATION=upex_${EXP_ID}
+#export RESERVATION=upex_${EXP_ID}
+export RESERVATION=upex_010662
 
 # If invoked from a slurm job submitted by DAMNIT (which runs under its own
 # pixi env), --export=ALL leaks PYTHONPATH/CONDA_PREFIX/... from that env into

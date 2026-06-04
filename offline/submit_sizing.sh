@@ -10,7 +10,9 @@ source $PARENT_DIR/source_at_maxwell.sh
 
 cd $SCRIPT_DIR
 
-sbatch <<EOT
+RES_ARG=""
+[ -n "${RESERVATION}" ] && RES_ARG="--reservation=${RESERVATION}"
+sbatch ${RES_ARG} <<EOT
 #!/bin/bash
 
 #SBATCH --array=${1}
@@ -19,7 +21,6 @@ sbatch <<EOT
 #SBATCH -J sizing-${EXP_ID}
 #SBATCH -o ${EXP_PREFIX}/scratch/log/sizing-${EXP_ID}-%A-%a.out
 #SBATCH -e ${EXP_PREFIX}/scratch/log/sizing-${EXP_ID}-%A-%a.out
-#SBATCH --reservation=${RESERVATION}
 #SBATCH --partition=${PARTITION}
 
 # exit on first error
