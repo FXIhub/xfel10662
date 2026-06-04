@@ -471,7 +471,7 @@ def good_hits(run, run_no: "meta#run_number",
     """Filter hits by classification and size fit and Hitscore."""
     import h5py
     hit_sigma_threshold = 10.
-    size_min = 0.8
+    size_min = 0.7
     size_max = 1.2
     good_classes = [0, 1, 2, 3, 4, 5, 6]
 

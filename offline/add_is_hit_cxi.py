@@ -15,7 +15,7 @@ REQUIRED_DATASETS = {
 }
 
 
-def add_is_hit_cxi(cxi_file, hit_sigma_threshold = 10., size_min = 0.8, size_max = 1.2, good_classes = [0, 1, 2, 3, 4, 5, 6]):
+def add_is_hit_cxi(cxi_file, hit_sigma_threshold = 10., size_min = 0.7, size_max = 1.2, good_classes = [0, 1, 2, 3, 4, 5, 6]):
     with h5py.File(cxi_file) as f:
         # Fail early and clearly if the upstream classification/sizing results
         # have not been written into the CXI yet (otherwise this surfaces as a

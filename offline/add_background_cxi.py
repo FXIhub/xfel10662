@@ -134,13 +134,16 @@ def compute_background_from_misses(vds_file, ev, max_trains=None, k_sigma=5.0,
         with mp.Pool(nproc) as pool:
             results = pool.map(_accumulate_chunk, tasks)
 
-    # Assemble the per-cell accumulator from the per-worker partitions.
+    # Assemble the per-cell accumulator from the per-worker partitions, and the
+    # per-VDS-frame total counts (the weighting numerator, see compute_weighting).
     sums  = np.zeros((n_cells,) + frame_shape, dtype=np.float32)
     count = np.zeros(n_cells, dtype=np.int64)
-    for cids, s, c in results:
+    frame_counts = np.full(train.shape[0], np.nan, dtype=np.float64)
+    for cids, s, c, idx, totals in results:
         idx_global = np.asarray(cids, dtype=int)
         sums[idx_global]  = s
         count[idx_global] = c
+        frame_counts[idx] = totals
 
     has_data = count > 0
     cell_mean = np.full(sums.shape, np.nan, dtype=np.float32)
@@ -159,21 +162,27 @@ def compute_background_from_misses(vds_file, ev, max_trains=None, k_sigma=5.0,
                 lambda m: _aggregate_module(cell_mean[:, m], k_sigma),
                 range(n_modules)))
     background = np.stack(per_module, axis=0)
-    return background, int(len(miss_idx))
+    return background, int(len(miss_idx)), frame_counts
 
 
-def compute_weighting(ev, back_counts, emin=1e-3):
+def compute_weighting(ev, frame_counts, back_counts, emin=1e-3):
     """Return the per-VDS-frame background weighting b_d.
 
     For each train t:
-        a_t = (sum of photon counts over misses in t) / (<B> * Nmiss_t)
+        a_t = (sum of miss-frame total counts in t) / (<B> * Nmiss_t)
     Per-shot:
         b_d = (E_d / <E>) * a_(t_d)
+
+    `frame_counts` holds the total counts of each miss frame, summed from the
+    same VDS data as the background image, so the numerator and denominator <B>
+    (= back_counts = sum of data_white) are on the same scale and a_t averages
+    to ~1. Using the separate LITFRM proxy here put them on different scales and
+    drove the mean weighting far below 1.
     """
     E       = np.asarray(ev['pulse_energy'])
     tids    = np.asarray(ev['trainId'])
     misses  = ~np.asarray(ev['is_hit'], dtype=bool)
-    Kphot   = np.asarray(ev['photons'])
+    Kphot   = np.asarray(frame_counts)
 
     a_d = -np.ones(tids.shape[0], dtype=float)
     for t in np.unique(tids):
@@ -263,13 +272,13 @@ def main():
         dc = extra_data.open_run(proposal, run, data='all')
         ev = mcf.load_facility_data(dc, vds_file)
 
-        back, n_used = compute_background_from_misses(
+        back, n_used, frame_counts = compute_background_from_misses(
             vds_file, ev, max_trains=args.max_trains,
             k_sigma=args.k_sigma, nproc=args.nproc)
         back_counts = float(back.sum())
         print(f'{run=} {back_counts=:.3g} (from {n_used} frames)', file=sys.stderr)
 
-        b = compute_weighting(ev, back_counts)
+        b = compute_weighting(ev, frame_counts, back_counts)
 
         write_sidecar(sidecar_file, back, b)
         print(f'wrote {sidecar_file}')
