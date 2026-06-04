@@ -155,14 +155,28 @@ def get_proposal_from_prefix():
 
 
 def get_sample_name(run):
-    """Read sample name from the autologger run table."""
+    """Sample name from myMdC via extra_proposal.
+
+    The autologger run_table.json is deprecated (DAMNIT migration); it is kept
+    only as a legacy fallback for older proposals that still have one.
+    """
+    try:
+        from extra_proposal import Proposal
+        name = Proposal(get_proposal_from_prefix()).run_sample_name(run)
+        if name:
+            return name
+    except Exception as e:
+        print(f'warning: myMdC sample-name lookup failed for run {run}: {e!r}')
+
+    # Legacy fallback: autologger run table
     table_path = f'{PREFIX}scratch/log/run_table.json'
-    with open(table_path) as f:
-        table = json.load(f)
-    for v in table.values():
-        if isinstance(v, dict) and v.get('Run number') == run:
-            return v['Sample']
-    raise RuntimeError(f'sample name for run {run} not found in {table_path}')
+    if os.path.exists(table_path):
+        with open(table_path) as f:
+            table = json.load(f)
+        for v in table.values():
+            if isinstance(v, dict) and v.get('Run number') == run:
+                return v['Sample']
+    raise RuntimeError(f'sample name for run {run} not found via myMdC or {table_path}')
 
 
 def get_run_start_time(dc):

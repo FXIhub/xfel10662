@@ -9,7 +9,9 @@ SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 PARENT_DIR=$(dirname $SCRIPT_DIR)
 source $PARENT_DIR/source_at_maxwell.sh
 
-sbatch <<EOT
+RES_ARG=""
+[ -n "${RESERVATION}" ] && RES_ARG="--reservation=${RESERVATION}"
+sbatch ${RES_ARG} <<EOT
 #!/bin/bash
 
 #SBATCH --array=${1}
@@ -18,7 +20,6 @@ sbatch <<EOT
 #SBATCH -o ${EXP_PREFIX}/scratch/log/vds-${EXP_ID}-%A-%a.out
 #SBATCH -e ${EXP_PREFIX}/scratch/log/vds-${EXP_ID}-%A-%a.out
 #SBATCH --export=NONE
-#SBATCH --reservation=${RESERVATION}
 #SBATCH --partition=${PARTITION}
 
 set -e
