@@ -1,31 +1,24 @@
 # xfel10662
-3D Diffractive Imaging of Single-Protein with Hard X-ray Laser at the SFX/SPB instrument 
+3D Diffractive Imaging of Single-Protein with Hard X-ray Laser at the SFX/SPB instrument
 
 ## Files
 ```text
-Experiment root  : /gpfs/exfel/exp/SPB/.../
-AGIPD Data       : /gpfs/exfel/exp/SPB/.../raw/r*/RAW*AGIPD*.h5
-Meta  Data       : /gpfs/exfel/exp/SPB/.../raw/r*/RAW*DA*.h5
-AGIPD (corrected): /gpfs/exfel/exp/SPB/.../proc/r*/COR*AGIPD*.h5
-Analysis scripts : /gpfs/exfel/exp/SPB/.../usr/Shared/<user>/
-Analysis files   : /gpfs/exfel/exp/SPB/.../scratch/<user>/
+Experiment root  : /gpfs/exfel/exp/SPB/202601/p010662/
+AGIPD Data       :   /raw/r*/RAW*AGIPD*.h5
+Meta  Data       :   /raw/r*/RAW*DA*.h5
+AGIPD (corrected):   /proc/r*/COR*AGIPD*.h5
+This repo        :   /usr/Shared/xfel10662/
+Output files     :   /scratch/
 ```
 
 ## Pipeline
 ```text
 XFEL Data (/raw)
    └► facility calibrations (/proc/r*/CORR*)
-   └► per-cell powder (/scratch/powder/r*_powder.h5)
-     └► per-cell mask  (/scratch/det/r*_mask.h5)
-        └► event info (/scratch/events/r*_events.h5)
-          └► per-cell per-cell powder hits non-hits (/scratch/powder/r*_powder.h5)
-            └► background estimation (events file)
-              └► cxi files for hits (/scratch/hits/r*_hits.cxi)
-                ├► sizing (cxi file)
-                ├► static EMC (/scratch/emc_static/r*_emc_static.h5)
-                └► 2D EMC (/scratch/emc_2D/r*_emc_2D.h5)
-                  └► classification (write to event info)
-                    └► 3D EMC (/scratch/emc_3D/r*_emc_3D.h5)
+     └► vds files  (/scratch/vds/r*.cxi)
+       └► cxi file with hits only (/scratch/saved_hits/r*_hits.cxi)
+         ├► classification (cxi file)
+         ├► sizing (cxi file)
 ```
 
 ## Scripts
@@ -34,24 +27,95 @@ These are located in `offline/`
 XFEL Data (/raw)
    └► facility calibrations (automatically triggered by EuXFEL)
       └► VDS files (submit_vds.sh)
-         └► event info (submit_events.sh)
-            └► cxi files for hits (submit_cxi.sh)
-               ├► fit to precalculated pdb simulations (...)
-               ├► static EMC (...)
-               └► 2D EMC (...)
-                  └► classification (...)
-                     └► 3D EMC (...)
+        └► cxi files for hits (submit_cxi.sh)
+          ├► fit to precalculated pdb simulations (submit_classification.sh)
+          ├► fit scale factors to pdb simulations (submit_sizing.sh)
+          ├► add "is_hit" based on above (add_is_hit_cxi.py)
 ```
 
-## Autologger
-Reads from facility api, events files and job scripts, writes to `run_table.json` then posts to a google doc.
+## DAMNIT
+[damnit docs](https://damnit.xfel.eu)
 
-Script: `online/autologger/autologger.py`
-![autologger.py](images/autologger.png)
+This is a tool developed by the EuXFEL to automatically log run information in a spread sheet. It also automatically launches analysis scripts in this repo once preconditions are met.
 
-## Autoprocessor
-Reads from `run_table.json` and automatically runs jobs based on conditionals.
+The cells in the spread sheet are determined by the `/DAMNIT/context.py` file.
 
-Status of call (not run/running/error/finished) are writen to run table by the autologger.
 
-Script: `online/autoprocessor/autoprocessor.py'
+## Example cxi file
+```bash
+% h5ls -r /gpfs/exfel/exp/SPB/202601/p010662/scratch/saved_hits/r0600_hits_test.cxi
+/                        Group
+/cxi_version             Dataset {SCALAR}
+/entry_1                 Group
+/entry_1/data_1          Group
+/entry_1/data_1/data     Soft Link {/entry_1/instrument_1/detector_1/data}
+/entry_1/experiment_identifier Dataset {461}
+/entry_1/instrument_1    Group
+/entry_1/instrument_1/detector_1 Group
+/entry_1/instrument_1/detector_1/background_weighting Dataset {461}
+/entry_1/instrument_1/detector_1/basis_vectors Dataset {16, 2, 3}
+/entry_1/instrument_1/detector_1/cellId Dataset {461}
+/entry_1/instrument_1/detector_1/corner_position Dataset {16, 3}
+/entry_1/instrument_1/detector_1/data Dataset {461, 16, 512, 128}
+/entry_1/instrument_1/detector_1/data_white Dataset {16, 512, 128}
+/entry_1/instrument_1/detector_1/description Dataset {SCALAR}
+/entry_1/instrument_1/detector_1/distance Dataset {SCALAR}
+/entry_1/instrument_1/detector_1/experiment_identifier Soft Link {/entry_1/experiment_identifier}
+/entry_1/instrument_1/detector_1/mask Dataset {16, 512, 128}
+/entry_1/instrument_1/detector_1/module_identifier Dataset {16}
+/entry_1/instrument_1/detector_1/score Group
+/entry_1/instrument_1/detector_1/score/hit_score Dataset {461}
+/entry_1/instrument_1/detector_1/score/hit_sigma Dataset {461}
+/entry_1/instrument_1/detector_1/score/is_hit Dataset {461}
+/entry_1/instrument_1/detector_1/score/photon_counts Dataset {461}
+/entry_1/instrument_1/detector_1/trainId Dataset {461}
+/entry_1/instrument_1/detector_1/vds_index Dataset {461}
+/entry_1/instrument_1/detector_1/x_pixel_size Dataset {SCALAR}
+/entry_1/instrument_1/detector_1/xyz_map Dataset {3, 16, 512, 128}
+/entry_1/instrument_1/detector_1/y_pixel_size Dataset {SCALAR}
+/entry_1/instrument_1/electrospray Group
+/entry_1/instrument_1/electrospray/CO2_capillary Dataset {461}
+/entry_1/instrument_1/electrospray/CO2_chamber Dataset {461}
+/entry_1/instrument_1/electrospray/DP2 Dataset {461}
+/entry_1/instrument_1/electrospray/He_chamber Dataset {461}
+/entry_1/instrument_1/electrospray/N2_capillary Dataset {461}
+/entry_1/instrument_1/electrospray/N2_chamber Dataset {461}
+/entry_1/instrument_1/electrospray/current Dataset {461}
+/entry_1/instrument_1/electrospray/experiment_identifier Soft Link {/entry_1/experiment_identifier}
+/entry_1/instrument_1/electrospray/liquidjet_He Dataset {461}
+/entry_1/instrument_1/electrospray/voltage Dataset {461}
+/entry_1/instrument_1/name Dataset {SCALAR}
+/entry_1/instrument_1/source_1 Group
+/entry_1/instrument_1/source_1/energy Dataset {461}
+/entry_1/instrument_1/source_1/name Dataset {SCALAR}
+/entry_1/instrument_1/source_1/pulse_energy Dataset {461}
+/entry_1/result_1        Group
+/entry_1/result_1/class_labels Dataset {13}
+/entry_1/result_1/data   Dataset {461}
+/entry_1/result_1/description Dataset {SCALAR}
+/entry_1/result_1/detector_1 Soft Link {/entry_1/instrument_1/detector_1}
+/entry_1/result_1/frames Dataset {151}
+/entry_1/result_1/process_1 Group
+/entry_1/result_1/process_1/command Dataset {SCALAR}
+/entry_1/result_1/process_1/date Dataset {SCALAR}
+/entry_1/result_1/process_1/program Dataset {SCALAR}
+/entry_1/result_1/process_1/version Dataset {SCALAR}
+/entry_1/result_2        Group
+/entry_1/result_2/class_index Dataset {461}
+/entry_1/result_2/data   Dataset {461, 3}
+/entry_1/result_2/description Dataset {SCALAR}
+/entry_1/result_2/detector_1 Soft Link {/entry_1/instrument_1/detector_1}
+/entry_1/result_2/frames Dataset {151}
+/entry_1/result_2/process_1 Group
+/entry_1/result_2/process_1/command Dataset {SCALAR}
+/entry_1/result_2/process_1/date Dataset {SCALAR}
+/entry_1/result_2/process_1/program Dataset {SCALAR}
+/entry_1/result_2/process_1/version Dataset {SCALAR}
+/entry_1/result_2/scale_index Dataset {461}
+/entry_1/result_2/scale_unique Dataset {1, 289, 3}
+/entry_1/sample_1        Group
+/entry_1/sample_1/name   Dataset {SCALAR}
+/entry_1/start_time      Dataset {SCALAR}
+/entry_1/title           Dataset {SCALAR}
+
+```

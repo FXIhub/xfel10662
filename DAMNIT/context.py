@@ -72,6 +72,21 @@ dp_outer_flowmeter = "SPB_IRU_LIQUIDJET/FLOW/ESI_DP_2"
 
 esi_hv = "SPB_EXP_HV/MDL/SHQ1"
 
+# Electrospray / aerosol injector sources per Johan Bielecki (SPB/SFX) email,
+# 2026-04-17, "Accessing electrospray parameters from recorded data". These are
+# the SPB_IRU_AEROSOL/FLOW devices actually archived in the beamtime data, which
+# differ from the SPB_IRU_LIQUIDJET/FLOW/ESI_* names used in the commented blocks
+# below. CO2_capillary, N2_capillary and He_chamber were unused in that beamtime
+# (constant/zero) but are included for completeness. All are per-train scalars.
+aerosol_co2_cap = "SPB_IRU_AEROSOL/FLOW/CO2_CAPILLARY"
+aerosol_co2_chm = "SPB_IRU_AEROSOL/FLOW/CO2_CHAMBER"
+aerosol_dp2     = "SPB_IRU_AEROSOL/FLOW/DP_2"
+aerosol_he_chm  = "SPB_IRU_AEROSOL/FLOW/HE_CHAMBER"
+aerosol_n2_cap  = "SPB_IRU_AEROSOL/FLOW/N2_CAPILLARY"
+aerosol_n2_chm  = "SPB_IRU_AEROSOL/FLOW/N2_CHAMBER"
+liquidjet_he    = "SPB_IRU_LIQUIDJET/FLOW/HE"
+# Taylor cone / aerosol camera (taylor_cam above): SPB_IRU_AEROSOL/CAM/CAM_1
+
 
 HITFINDER_SOURCE = 'SPB_DET_AGIPD1M-1/REDU/SPI_HITFINDER:output'
 
@@ -122,7 +137,7 @@ def repetition_rate(run):
     pulse_ids = run[bunch_pattern, 'sase1.pulseIds'].drop_empty_trains()[0].ndarray()[..., :n_pulses].squeeze()
 
     # compute repetition rate (in kHz) based on pulse IDs
-    if n_pulses == 0:     
+    if n_pulses == 0:
         rep_rate = 0.0
     elif n_pulses == 1:
         rep_rate = 1.0e-6
@@ -146,13 +161,13 @@ def transmission(run):
     xtd9_t = run[xtd9_att, 'actual.transmission'].drop_empty_trains()[0].ndarray()
     total_t = (xtd2_t * xtd9_t).squeeze()
     return total_t
-    
+
 # Detector
 
 @Variable(title="Detector pos. (mm)")
 def det_position(run):
     return run[det_pos, 'encoderPosition'].drop_empty_trains()[0].ndarray()[0]
-    
+
 @Variable(title="AGIPD memory cells")
 def agipd_memory_cells(run):
     return run[det_ctrl, 'bunchStructure.nPulses'].drop_empty_trains()[0].ndarray()[0]
@@ -174,52 +189,52 @@ def agipd_gain_mode(run):
 ##@Variable(title="Inline image")
 ##def inline_image(run):
 ##    return run[f"{inlinemic_cam}:daqOutput", 'data.image.pixels'].ndarray()[0]
-    
+
 ##@Variable(title="Side image")
 ##def side_image(run):
 ##    return run[f"{sidemic_cam}:daqOutput", 'data.image.pixels'].ndarray()[0]
 
-##@Variable(title="Taylor cone image")
-##def taylor_cone_image(run):
-##    return run[f"{taylor_cam}:daqOutput", 'data.image.pixels'].ndarray()[0]
+@Variable(title="Taylor cone image")
+def taylor_cone_image(run):
+    return run[f"{taylor_cam}:daqOutput", 'data.image.pixels'].ndarray()[0]
 
-# Electro spray
+# Electro spray (sources per Johan Bielecki email, 2026-04-17)
 
-##@Variable(title="N2 flow in chamber (ls/min)", summary="mean")
-##def n2_flow_chamber(run):
-##    return run[n2_chm_flowmeter, "measureCapacity.value"].ndarray()
+@Variable(title="N2 flow in chamber", summary="mean")
+def n2_flow_chamber(run):
+    return run[aerosol_n2_chm, "measureCapacity.value"].ndarray()
 
-##@Variable(title="CO2 flow in chamber (mln/min)", summary="mean")
-##def co2_flow_chamber(run):
-##    return run[co2_chm_flowmeter, "measureCapacity.value"].ndarray()
+@Variable(title="CO2 flow in chamber", summary="mean")
+def co2_flow_chamber(run):
+    return run[aerosol_co2_chm, "measureCapacity.value"].ndarray()
 
-##@Variable(title="He flow in chamber (ln/min)", summary="mean")
-##def he_flow_chamber(run):
-##    return run[he_chm_flowmeter, "measureCapacity.value"].ndarray()
+@Variable(title="He flow in chamber", summary="mean")
+def he_flow_chamber(run):
+    return run[aerosol_he_chm, "measureCapacity.value"].ndarray()
 
-##@Variable(title="N2 flow in capillary (mln/min)", summary="mean")
-##def n2_flow_capillary(run):
-##    return run[n2_cap_flowmeter, "measureCapacity.value"].ndarray()
+@Variable(title="N2 flow in capillary", summary="mean")
+def n2_flow_capillary(run):
+    return run[aerosol_n2_cap, "measureCapacity.value"].ndarray()
 
-##@Variable(title="CO2 flow in capillary (mln/min)", summary="mean")
-##def co2_flow_capillary(run):
-##    return run[co2_cap_flowmeter, "measureCapacity.value"].ndarray()
+@Variable(title="CO2 flow in capillary", summary="mean")
+def co2_flow_capillary(run):
+    return run[aerosol_co2_cap, "measureCapacity.value"].ndarray()
 
-##@Variable(title="dP: inner capillary (psi(g))", summary="mean")
-##def dp_inner(run):
-##    return run[dp_inner_flowmeter, "measureCapacity.value"].ndarray()
+@Variable(title="dP: outer capillary (DP_2)", summary="mean")
+def dp_outer(run):
+    return run[aerosol_dp2, "measureCapacity.value"].ndarray()
 
-##@Variable(title="dP: outer capillary (psi(a))", summary="mean")
-##def dp_outer(run):
-##    return run[dp_outer_flowmeter, "measureCapacity.value"].ndarray()
+@Variable(title="Liquidjet He flow", summary="mean")
+def liquidjet_he_flow(run):
+    return run[liquidjet_he, "measureCapacity.value"].ndarray()
 
-##@Variable(title="Electrospray current (A)", summary="mean")
-##def esi_current(run):
-##    return run[esi_hv, "channel1.current.value"].ndarray()
+@Variable(title="Electrospray current (A)", summary="mean")
+def esi_current(run):
+    return run[esi_hv, "channel1.current.value"].ndarray()
 
-##@Variable(title="Electrospray voltage (V)", summary="mean")
-##def esi_voltage(run):
-##    return run[esi_hv, "channel1.voltage.value"].ndarray()
+@Variable(title="Electrospray voltage (V)", summary="mean")
+def esi_voltage(run):
+    return run[esi_hv, "channel1.voltage.value"].ndarray()
 
 # @Variable(title="Sample set flow (μL/min)", summary="mean")
 # def sample_flow(run):
@@ -372,6 +387,7 @@ def cxi_path(run, run_no: "meta#run_number", proposal_path: "meta#proposal_path"
     """Path to the hits CXI written by make_cxi."""
     return str(proposal_path / "scratch" / "saved_hits" / f"r{run_no:04d}_hits.cxi")
 
+
 @Variable(title="Classification", cluster=True)
 def make_classification(run, run_no: "meta#run_number",
                         proposal_path: "meta#proposal_path",
@@ -387,7 +403,7 @@ def make_classification(run, run_no: "meta#run_number",
     return state
 
 
-@Variable(title="Class histogram")
+@Variable(title="Run histogram")
 def classification_histogram(run, run_no: "meta#run_number",
                              proposal_path: "meta#proposal_path",
                              class_state: "var#make_classification"):
@@ -408,6 +424,67 @@ def classification_histogram(run, run_no: "meta#run_number",
     return fig
 
 ### sizing
+@Variable(title="Sizing", cluster=True)
+def make_sizing(run, run_no: "meta#run_number",
+                        proposal_path: "meta#proposal_path",
+                        cxi_state: "var#make_cxi"):
+    """Run EMC classification on the hits CXI via offline/submit_sizing.sh.
+    Waits for make_cxi so the CXI file is on disk before submitting."""
+    state = _submit_and_wait("submit_sizing.sh", run_no)
+    info = (proposal_path / "scratch" / "sizing"
+            / f"r{run_no:04d}" / "iteration_info.h5")
+    if not info.exists():
+        raise RuntimeError(
+            f"{state}: {info} missing after submit_sizing.sh")
+    return state
+
+
+@Variable(title="Run 2D histogram")
+def sizing_histogram(run, run_no: "meta#run_number",
+                             proposal_path: "meta#proposal_path",
+                             class_state: "var#make_sizing"):
+    """2D histogram of most-likely class assignments. Loaded from
+    offline/make_sizing_histogram.py so the CLI script and the DAMNIT cell share one
+    implementation. Also drops a PNG next to iteration_info.h5 for offline
+    viewing/transfer."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "make_sizing_histogram", OFFLINE_DIR / "make_sizing_histogram.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    cxi_file = proposal_path / "scratch" / "saved_hits" / f"r{run_no:04d}_hits.cxi"
+
+    fig = mod.make_sizing_histogram(cxi_file, run_no)
+
+    # write figure to sizing folder
+    directory = proposal_path / "scratch" / "sizing" / f"r{run_no:04d}"
+    fig.savefig(directory / "sizing_histogram.png")
+    return fig
+
+
+@Variable(title="Good Hits", summary="sum")
+def good_hits(run, run_no: "meta#run_number",
+                             proposal_path: "meta#proposal_path",
+                             class_state: "var#make_classification",
+                             size_state: "var#make_sizing"):
+    """Filter hits by classification and size fit and Hitscore."""
+    import h5py
+    hit_sigma_threshold = 10.
+    size_min = 0.8
+    size_max = 1.2
+    good_classes = [0, 1, 2, 3, 4, 5, 6]
+
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "add_is_hit_cxi", OFFLINE_DIR / "add_is_hit_cxi.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    cxi_file = proposal_path / "scratch" / "saved_hits" / f"r{run_no:04d}_hits.cxi"
+
+    is_hit = mod.add_is_hit_cxi(cxi_file, hit_sigma_threshold, size_min, size_max, good_classes)
+    return is_hit
 
 ### peak intensity report
 

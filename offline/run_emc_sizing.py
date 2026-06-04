@@ -101,65 +101,106 @@ for i in range(iters):
 
     comm.Barrier()
 
-# Write per-frame classification back into the CXI as entry_1/result_1
+
+# Write per-frame classification back into the CXI as entry_1/result_2
 # (CXI v1.6 §A.14 Result: non-image analysis output) with a process_1
-# subgroup (§A.13) recording the run. result_1/data is aligned to the CXI
-# events; -1 marks events not selected by get_frames() (config_classification).
+# subgroup (§A.13) recording the run. result_2/data is aligned to the CXI
+# events; -1 marks events not selected by get_frames() (config_sizing).
+
+# entry_1/
+#   result_2/
+#       description = '...'
+#       data = (D, 3) # N x scale factors for x, y, z
+#       frames = (D,) # cxi data indices
+#       class_index = (D,) # most likely class index
+#       process_1/
+#           program = '...'
+#           data = '...'
+#           version = '...'
+#           command = '...'
+
 if rank == 0:
     import datetime
     import sys
 
-    # Mirror of LABELS in offline/make_histogram.py — keep in sync with the
-    # class_model_*.h5 symlinks in offline/submit_classification.sh.
-    LABELS = [
-        'ref (2gtl)',
-        '0.00 nm',
-        '0.50 nm',
-        '0.75 nm',
-        '1.00 nm',
-        '1.50 nm',
-        '2.00 nm',
-        'z-contact',
-        'y-contact',
-        'triplet',
-        'ring',
-        'cluster',
-        'sphere',
-    ]
-
     with h5py.File('iteration_info.h5', 'r') as f:
+        r_d = f['iteration_0/most_likely_orientation_d'][()]
         c_d = f['iteration_0/most_likely_model_d'][()]
+
+    """
+    Internally the mapping matrix will be indexed as:
+        M_sr -> M_sjkl:
+            s = symmetry index (S_s)
+            j = offset index (dr_j)
+            k = scale index (scale_k)
+            l = orientation index (R_l)
+
+    r -> raveled j,k,l index
+    """
 
     # emc3 indexes data elements 'd' compactly (0..N-1) over the frame subset
     # selected by get_frames(). Recover the d->cxi-event mapping from the
     # loaded DataSparseCXI rather than globbing data_*.h5 (stale files from
     # earlier runs could shadow the current one).
-    frames_d = config['classes'][0]['data'].frames
 
     with h5py.File('run.cxi', 'r+') as f:
         entry = f['entry_1']
-        n_events = entry['instrument_1/detector_1/data'].shape[0]
 
+        # assume the same for all classes
+        frames_d = config['classes'][0]['data'].frames
+        D = len(frames_d)
+        n_events = entry['instrument_1/detector_1/data'].shape[0]
         c_event = np.full(n_events, -1, dtype=np.int32)
         c_event[frames_d] = c_d.astype(np.int32)
 
-        if 'result_1' in entry:
-            del entry['result_1']
-        result = entry.create_group('result_1')
+        if 'result_2' in entry:
+            del entry['result_2']
+        result = entry.create_group('result_2')
         result['description'] = (
-            'EMC most-likely class index per CXI event; '
-            '-1 marks events not selected for classification')
-        result.create_dataset('data', data=c_event)
+            'EMC most-likely scale factors (x,y,z) per CXI event; '
+            'class_index = -1 marks events not selected for classification')
+        result.create_dataset('class_index', data=c_event)
         result.create_dataset('frames', data=frames_d.astype(np.int64))
-        result.create_dataset(
-            'class_labels',
-            data=np.array(LABELS, dtype=h5py.string_dtype()),
-        )
         result['detector_1'] = h5py.SoftLink(
             '/entry_1/instrument_1/detector_1')
 
+        # get scale indices per class
+        # and scale factors per class
+        k_c = []
+        scale_c = []
+        for c in config['classes']:
+            j, k, l = np.indices(c['mapper'].M_sjkl.shape[1:-2])
+            k_c.append(k.ravel().copy())
+            scale_c.append(c['scale'])
+
+        # get scale index per frame
+        k_d = []
+        scale_d = []
+        for d in range(D):
+            cid = c_d[d] # most likely class index
+            r = r_d[d]   # most likely r-index
+
+            k = k_c[cid][r] # most likely scale index
+            k_d.append(k)
+
+            scale_d.append(scale_c[cid][k])
+
+        # get unique scale factors
+        scale_unique = np.unique([c['scale'] for c in config['classes']], axis=0)
+
+        # now map scale_d to the global frame index
+        k_event = np.full(n_events, -1, dtype=np.int32)
+        k_event[frames_d] = k_d
+
+        scale_event = np.full((n_events, 3), -1, dtype=float)
+        scale_event[frames_d] = scale_d
+
+        result['scale_index'] = k_event
+        result['data'] = scale_event
+        result['scale_unique'] = scale_unique
+
         process = result.create_group('process_1')
-        process['program'] = 'run_emc_classification.py'
+        process['program'] = 'run_emc_sizing.py'
         process['command'] = ' '.join(sys.argv)
         process['date'] = datetime.datetime.now(
             datetime.timezone.utc).isoformat()

@@ -57,20 +57,26 @@ def _aggregate_module(cell_mean_m, k_sigma):
 
 def _accumulate_chunk(task):
     """Read assigned non-hit frames from the VDS and return per-cell sum + count
-    for the worker's cell partition. No two workers touch the same cellId."""
+    for the worker's cell partition, plus the total counts of each frame read.
+    No two workers touch the same cellId. The per-frame totals (paired with their
+    global VDS index) feed the per-shot weighting, computed from the same VDS data
+    as the background so the two are on a consistent scale."""
     rank, vds_file, vds_path, miss_idx, miss_cells, my_cell_ids, frame_shape = task
     cid_to_local = {int(c): i for i, c in enumerate(my_cell_ids)}
     sums  = np.zeros((len(my_cell_ids),) + frame_shape, dtype=np.float32)
     count = np.zeros(len(my_cell_ids), dtype=np.int64)
+    frame_totals = np.empty(len(miss_idx), dtype=np.float64)
     it = (tqdm(range(len(miss_idx)), desc=f'rank {rank} reading non-hits')
           if rank == 0 else range(len(miss_idx)))
     with h5py.File(vds_file) as g:
         data = g[vds_path]
         for i in it:
             j = cid_to_local[int(miss_cells[i])]
-            sums[j]  += np.squeeze(data[miss_idx[i]]).astype(np.float32)
+            frame = np.squeeze(data[miss_idx[i]]).astype(np.float32)
+            sums[j]  += frame
             count[j] += 1
-    return my_cell_ids, sums, count
+            frame_totals[i] = np.nansum(frame)
+    return my_cell_ids, sums, count, miss_idx, frame_totals
 
 
 def compute_background_from_misses(vds_file, ev, max_trains=None, k_sigma=5.0,
@@ -86,7 +92,9 @@ def compute_background_from_misses(vds_file, ev, max_trains=None, k_sigma=5.0,
     4. Per pixel across cells: drop cells whose mean is >k_sigma * (1.4826 * MAD)
        from the median across cells, then average the survivors.
 
-    Returns (background (NMODULES, ss, fs) float32, n_frames_used int).
+    Returns (background (NMODULES, ss, fs) float32, n_frames_used int,
+             frame_counts (Nframes,) float64 — total counts of each miss frame,
+             NaN for hits/unread frames).
     """
     train  = np.asarray(ev['trainId'])
     cell   = np.asarray(ev['cellId'])

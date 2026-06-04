@@ -6,6 +6,7 @@ All per-shot quantities are read from native EuXFEL Karabo sources via extra_dat
     photons (energy per detector frame)               <-  LITFRM
     pulse_energy                                      <-  XGM (μJ -> J)
     photon energy / wavelength                        <-  undulator (keV -> J/m)
+    electrospray flows + HV voltage/current           <-  AEROSOL/LIQUIDJET/EXP_HV (per-train)
     trainId, cellId, pulseId per frame                <-  AGIPD module 0 CORR
 Hit-finder pulses are aligned to AGIPD frames by (trainId, pulseId).
 
@@ -26,6 +27,11 @@ experiment_identifier; per-pixel arrays by module_identifier:y:x.
             name                scalar          string             "European XFEL SASE1"
             energy              (Nevents,)      float32  J         per-shot photon energy
             pulse_energy        (Nevents,)      float32  J         per-shot XGM pulse energy
+          electrospray/                                            NXcollection (if present)
+            <param>             (Nevents,)      float32            per-shot injector params
+                                                                   (flows, HV voltage/current),
+                                                                   broadcast from per-train control
+            experiment_identifier -> /entry_1/experiment_identifier
           detector_1/                                              NXdetector
             description         scalar          string             "AGIPD 1M"
             distance            scalar          float    m         sample-to-detector (DET_DIST)
@@ -61,6 +67,7 @@ Axes attributes used as dimension scales:
     mask, data_white                              axes = "module_identifier:y:x"
     data                                          axes = "experiment_identifier:module_identifier:y:x"
     score/photon_counts, hit_score, hit_sigma     axes = "experiment_identifier"
+    electrospray/<param>                           axes = "experiment_identifier"
 """
 
 import argparse
@@ -89,6 +96,23 @@ LITFRM_SRC            = 'SPB_IRU_AGIPD1M1/REDU/LITFRM:output'
 XGM_SRC               = 'SPB_XTD9_XGM/XGM/DOOCS:output'           # downstream XGM near sample
 UND_SRC               = 'SPB_XTD2_UND/DOOCS/ENERGY'               # undulator energy (control)
 UND_ENERGY_KEY        = 'actualPosition'                          # keV per train
+
+# Electrospray / aerosol injector parameters (per-train control scalars). Sources
+# and keys per Johan Bielecki (SPB/SFX), 2026-04-17. Each is broadcast from its
+# per-train value to every hit by trainId; sources absent from a run are skipped.
+# (In the p7927 beamtime CO2_capillary, N2_capillary and He_chamber were unused;
+#  they are still read here when present and simply come out constant/zero.)
+ELECTROSPRAY_SRCS = {
+    'CO2_capillary': ('SPB_IRU_AEROSOL/FLOW/CO2_CAPILLARY', 'measureCapacity.value'),
+    'CO2_chamber':   ('SPB_IRU_AEROSOL/FLOW/CO2_CHAMBER',   'measureCapacity.value'),
+    'DP2':           ('SPB_IRU_AEROSOL/FLOW/DP_2',          'measureCapacity.value'),
+    'He_chamber':    ('SPB_IRU_AEROSOL/FLOW/HE_CHAMBER',    'measureCapacity.value'),
+    'N2_capillary':  ('SPB_IRU_AEROSOL/FLOW/N2_CAPILLARY',  'measureCapacity.value'),
+    'N2_chamber':    ('SPB_IRU_AEROSOL/FLOW/N2_CHAMBER',    'measureCapacity.value'),
+    'liquidjet_He':  ('SPB_IRU_LIQUIDJET/FLOW/HE',          'measureCapacity.value'),
+    'voltage':       ('SPB_EXP_HV/MDL/SHQ1',                'channel1.voltage.value'),
+    'current':       ('SPB_EXP_HV/MDL/SHQ1',                'channel1.current.value'),
+}
 
 # CXI mask bits (cxi.h)
 CXI_PIXEL_IS_BAD = 0x00000080
@@ -317,6 +341,22 @@ def load_facility_data(dc, vds_file):
     else:
         print(f'WARNING: {UND_SRC} not in run; wavelength/photon_energy will be NaN')
 
+    # 6) Electrospray / aerosol injector parameters (per-train control scalars),
+    # broadcast to per-frame by trainId. Stored under out['electrospray'].
+    out['electrospray'] = {}
+    for name, (src, key) in ELECTROSPRAY_SRCS.items():
+        if src not in dc.all_sources:
+            print(f'WARNING: {src} not in run; electrospray "{name}" skipped')
+            continue
+        if key not in dc[src].keys():
+            print(f'WARNING: {src} has no key {key}; electrospray "{name}" skipped')
+            continue
+        kd      = dc[src, key]
+        vals    = kd.ndarray().ravel()
+        val_tid = kd.train_id_coordinates()
+        out['electrospray'][name] = _broadcast_per_train(
+            vals, val_tid, a_train).astype(np.float32)
+
     return out
 
 
@@ -441,6 +481,17 @@ def write_initial_file(args, ev, indices, proposal, start_time, sample_name,
                                    **gz)
         pe.attrs['units'] = 'J'
         pe.attrs['axes'] = 'experiment_identifier'
+
+        # Electrospray / aerosol injector parameters, one per-shot column each.
+        es_cols = ev.get('electrospray', {})
+        if es_cols:
+            es_grp = instrument.create_group('electrospray')
+            es_grp.attrs['NX_class'] = 'NXcollection'
+            es_grp['experiment_identifier'] = h5py.SoftLink(
+                '/entry_1/experiment_identifier')
+            for name, col in es_cols.items():
+                ds = es_grp.create_dataset(name, data=col[indices], **gz)
+                ds.attrs['axes'] = 'experiment_identifier'
 
         detector = instrument.create_group('detector_1')
         detector.attrs['NX_class'] = 'NXdetector'

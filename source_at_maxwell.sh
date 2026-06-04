@@ -10,7 +10,7 @@ export EXP_PREFIX=/gpfs/exfel/exp/SPB/202405/p007927/
 # for 6 months after beamtime
 #export PARTITION=upex
 # for more than 6 months after beamtime
-export PARTITION=allcpu
+export PARTITION=cfel
 #export PARTITION=allgpu
 export RESERVATION=
 
