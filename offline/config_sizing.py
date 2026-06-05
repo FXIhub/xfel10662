@@ -80,7 +80,7 @@ def make_pickle_file(
     y0 = 400e-6
     dx = 400e-6
 
-    xyz_offset = [[dx, dx, 0]]
+    xyz_offset = [[0, 0, 0]]
 
     scale = [1.0]
 
