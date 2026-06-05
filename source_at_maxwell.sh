@@ -15,7 +15,10 @@ export REPO_ON_MAXWELL=${EXP_PREFIX}usr/Shared/xfel10662
 #export RESERVATION=upex_${EXP_ID}
 
 # for 6 months after beamtime
-export PARTITION=upex
+# upex-beamtime = reserved nodes, no preemption. It REQUIRES the reservation
+# set below (bare upex-beamtime is access-denied). When upex_010662 expires
+# (2026-06-09 05:00) revert to: PARTITION=upex with an empty RESERVATION.
+export PARTITION=upex-beamtime
 # for more than 6 months after beamtime
 #export PARTITION=allcpu
 #export PARTITION=allgpu
