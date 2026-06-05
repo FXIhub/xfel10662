@@ -3,11 +3,11 @@ export SANDBOX=/gpfs/exfel/exp/SPB/202405/p007927/scratch/amorgan/damnit-sandbox
 #export EXP_ID=007927
 #export EXP_PREFIX=/gpfs/exfel/exp/SPB/202405/p007927/
 
-#export EXP_ID=010662
-#export EXP_PREFIX=/gpfs/exfel/exp/SPB/202601/p010662/
+export EXP_ID=010662
+export EXP_PREFIX=/gpfs/exfel/exp/SPB/202601/p010662/
 
-export EXP_ID=010996
-export EXP_PREFIX=/gpfs/exfel/exp/SPB/202604/p010996/
+#export EXP_ID=010996
+#export EXP_PREFIX=/gpfs/exfel/exp/SPB/202604/p010996/
 export REPO_ON_MAXWELL=${EXP_PREFIX}usr/Shared/xfel10662
 
 # for beamtime
@@ -21,6 +21,7 @@ export PARTITION=upex
 #export PARTITION=allgpu
 #export RESERVATION=upex_${EXP_ID}
 export RESERVATION=upex_010662
+
 
 # If invoked from a slurm job submitted by DAMNIT (which runs under its own
 # pixi env), --export=ALL leaks PYTHONPATH/CONDA_PREFIX/... from that env into

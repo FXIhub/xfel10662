@@ -34,13 +34,13 @@ experiment_identifier; per-pixel arrays by module_identifier:y:x.
             experiment_identifier -> /entry_1/experiment_identifier
           detector_1/                                              NXdetector
             description         scalar          string             "AGIPD 1M"
-            distance            scalar          float    m         sample-to-detector (DET_DIST)
+            distance            scalar          float    m         sample-to-detector (mean pixel z from geom)
             x_pixel_size        scalar          float    m         from extra_geom
             y_pixel_size        scalar          float    m         from extra_geom
             corner_position     (NMODULES, 3)   float32  m         corner of pixel (0,0) per module
             basis_vectors       (NMODULES, 2, 3) float32 m         pixel-step vectors (ss, fs)
             module_identifier   (NMODULES,)     string             "AGIPD00"..."AGIPD15"
-            xyz_map             (3, NMODULES, ss, fs) float32 m    legacy per-pixel position; z = DET_DIST
+            xyz_map             (3, NMODULES, ss, fs) float32 m    legacy per-pixel position; z from geom
             trainId             (Nevents,)      uint64
             cellId              (Nevents,)      uint16
             vds_index           (Nevents,)      uint64             index into the per-run VDS
@@ -84,7 +84,7 @@ import scipy.constants as sc
 from tqdm import tqdm
 
 import common
-from constants import PREFIX, DET_DIST
+from constants import PREFIX
 
 # Standard CXI path inside the per-run VDS file (as written by extra_data.write_virtual_cxi)
 VDS_DATA_PATH = '/entry_1/instrument_1/detector_1/data'
@@ -406,7 +406,13 @@ def build_detector_mask(vds_file, extra_mask_file, frame_shape):
 
 def geometry_to_cxi(geom_file):
     """Compute CXI-spec corner_position, basis_vectors, module_identifier, pixel
-    size, and a legacy xyz_map per-pixel position array from a CrystFEL geom."""
+    size, a legacy xyz_map per-pixel position array, and the sample-to-detector
+    distance from a CrystFEL geom.
+
+    The per-run geom now carries the absolute z position of every pixel (set
+    from the AGIPD Z-stage encoder when the geom is generated, see
+    common.make_geom), so we trust get_pixel_positions() directly instead of
+    offsetting by a hardcoded DET_DIST constant."""
     geom = extra_geom.AGIPD_1MGeometry.from_crystfel_geom(geom_file)
     # shape (modules, ss, fs, 3) in metres, pixel centres
     pos = geom.get_pixel_positions()
@@ -418,27 +424,29 @@ def geometry_to_cxi(geom_file):
     # basis_vectors[mod, 1, :] = step along the second (fs) data dimension
     basis_vectors[:, 0, :] = pos[:, 1, 0, :] - pos[:, 0, 0, :]
     basis_vectors[:, 1, :] = pos[:, 0, 1, :] - pos[:, 0, 0, :]
-    # spec: corner_position is the *corner* of pixel (0,0), not the centre
+    # spec: corner_position is the *corner* of pixel (0,0), not the centre.
+    # z comes straight from the geom — it already encodes the true detector distance.
     corner_position[:] = (pos[:, 0, 0, :]
                           - 0.5 * basis_vectors[:, 0, :]
                           - 0.5 * basis_vectors[:, 1, :])
-    # offset whole detector to live at z = DET_DIST (geom z is module-relative)
-    corner_position[:, 2] += DET_DIST
 
-    # Legacy per-pixel xyz map: (3, NMODULES, ss, fs); z overwritten with DET_DIST.
+    # Legacy per-pixel xyz map: (3, NMODULES, ss, fs), z trusted from the geom.
     # Not part of the CXI spec; kept for downstream code that imports it.
     xyz_map = np.transpose(pos, (3, 0, 1, 2)).astype(np.float32)
-    xyz_map[2] = DET_DIST
+
+    # Scalar sample-to-detector distance: mean pixel z from the geom.
+    distance = float(np.mean(pos[..., 2]))
 
     module_identifier = np.array([f'AGIPD{m:02d}' for m in range(nmodules)],
                                  dtype=h5py.string_dtype())
     return (corner_position, basis_vectors, module_identifier,
-            float(geom.pixel_size), xyz_map)
+            float(geom.pixel_size), xyz_map, distance)
 
 
 def write_initial_file(args, ev, indices, proposal, start_time, sample_name,
                        corner_position, basis_vectors, module_identifier,
-                       pixel_size, xyz_map, detector_good_pixels, frame_shape):
+                       pixel_size, xyz_map, distance, detector_good_pixels,
+                       frame_shape):
     Nevents = len(indices)
     photon_energy = (sc.h * sc.c / ev['wavelength']).astype(np.float32)
 
@@ -511,7 +519,7 @@ def write_initial_file(args, ev, indices, proposal, start_time, sample_name,
         detector.attrs['NX_class'] = 'NXdetector'
         detector['description'] = 'AGIPD 1M'
 
-        for name, val in (('distance', float(DET_DIST)),
+        for name, val in (('distance', float(distance)),
                           ('x_pixel_size', pixel_size),
                           ('y_pixel_size', pixel_size)):
             ds = detector.create_dataset(name, data=val)
@@ -527,8 +535,8 @@ def write_initial_file(args, ev, indices, proposal, start_time, sample_name,
 
         detector.create_dataset('module_identifier', data=module_identifier)
 
-        # Legacy per-pixel position map (not part of the CXI spec). Z is forced to
-        # DET_DIST. Kept so older downstream code that expects xyz_map keeps working.
+        # Legacy per-pixel position map (not part of the CXI spec). Z is taken
+        # from the geom. Kept so older downstream code that expects xyz_map keeps working.
         xyz_ds = detector.create_dataset('xyz_map', data=xyz_map, **gz)
         xyz_ds.attrs['units'] = 'm'
         xyz_ds.attrs['axes']  = 'coordinate:module_identifier:y:x'
@@ -626,9 +634,10 @@ def main():
     print(f'{masked_frac:.2f}% pixels masked (sampled across {ncells} cells)')
 
     (corner_position, basis_vectors, module_identifier,
-     pixel_size, xyz_map) = geometry_to_cxi(args.geom_file)
+     pixel_size, xyz_map, distance) = geometry_to_cxi(args.geom_file)
     assert basis_vectors.shape[0] == nmodules, \
         f'geom has {basis_vectors.shape[0]} modules but VDS has {nmodules}'
+    print(f'sample-to-detector distance from geom: {distance*1e3:.2f} mm')
 
     print(f'loading hit selection from {HITFINDER_SRC}')
     ev = load_facility_data(dc, args.vds_file)
@@ -646,7 +655,7 @@ def main():
     print(f'initialising {args.output_file}')
     write_initial_file(args, ev, indices, proposal, start_time, sample_name,
                        corner_position, basis_vectors, module_identifier,
-                       pixel_size, xyz_map, detector_good, frame_shape)
+                       pixel_size, xyz_map, distance, detector_good, frame_shape)
 
     write_frames(args, ev, indices, frame_shape, vds_dtype)
     print('Done')

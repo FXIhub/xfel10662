@@ -166,7 +166,9 @@ def transmission(run):
 
 @Variable(title="Detector pos. (mm)")
 def det_position(run):
-    return run[det_pos, 'encoderPosition'].drop_empty_trains()[0].ndarray()[0]
+    motor_z = run[det_pos, 'encoderPosition'].drop_empty_trains()[0].ndarray()[0]
+    DET_OFFSET = 0.4995748960790368
+    return motor_z + DET_OFFSET * 1e-3
 
 @Variable(title="AGIPD memory cells")
 def agipd_memory_cells(run):
