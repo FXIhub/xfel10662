@@ -308,17 +308,49 @@ def spi_hitscore(run):
 # cell value so it shows up in the DAMNIT table; any non-COMPLETED state
 # raises so DAMNIT records the variable as errored.
 
+# States meaning the job is still queued, running, or about to be retried by
+# Slurm -> keep polling.
 _SLURM_BUSY = {
     "PENDING", "CONFIGURING", "REQUEUED", "REQUEUE_HOLD", "REQUEUE_FED",
     "RESV_DEL_HOLD", "SUSPENDED", "RUNNING", "COMPLETING", "STAGE_OUT",
     "RESIZING",
 }
 
+# Infrastructure interruptions (not real failures): on the preemptible upex
+# queue Slurm requeues these, so a momentary PREEMPTED/NODE_FAIL snapshot is
+# transient and the job usually goes on to COMPLETE. Treat as retryable rather
+# than terminal -- this is the difference between a spurious error and success.
+_SLURM_REQUEUEABLE = {"PREEMPTED", "NODE_FAIL", "BOOT_FAIL"}
+
+
+def _job_state(jobid):
+    """Primary (top-line) sacct state for a job id, or '' if not yet recorded."""
+    out = subprocess.run(
+        ["sacct", "-j", jobid, "--format=State", "--noheader", "--parsable2"],
+        capture_output=True, text=True,
+    ).stdout
+    rows = [r.strip().rstrip("+") for r in out.splitlines() if r.strip()]
+    return rows[0].split()[0] if rows else ""
+
+
+def _in_queue(jobid):
+    """True while any task of the job is still pending/running/requeued."""
+    out = subprocess.run(
+        ["squeue", "-j", jobid, "-h", "-o", "%T"],
+        capture_output=True, text=True,
+    ).stdout
+    return bool(out.strip())
+
 
 def _submit_and_wait(script_name, run_no, poll_s=30.0, timeout_s=6 * 3600):
     """Run offline/<script_name> <run_no>, parse the slurm job id, then poll
-    sacct until it's no longer queued/running. Returns 'STATE (jobid)' on
-    COMPLETED; raises on any other terminal state or on timeout."""
+    until it reaches a stable terminal state. Returns 'STATE (jobid)' on
+    COMPLETED; raises on a genuine terminal failure or on timeout.
+
+    Preemption is tolerated: while a preempted job is being requeued it stays
+    in the queue, so we keep waiting instead of raising on the transient
+    PREEMPTED state (which is what made this error spuriously even though the
+    job later completed)."""
     script = OFFLINE_DIR / script_name
     if not script.exists():
         raise FileNotFoundError(script)
@@ -332,21 +364,36 @@ def _submit_and_wait(script_name, run_no, poll_s=30.0, timeout_s=6 * 3600):
     jobid = m.group(1)
 
     deadline = time.monotonic() + timeout_s
+    out_of_queue_polls = 0
     while time.monotonic() < deadline:
-        sacct = subprocess.run(
-            ["sacct", "-j", jobid, "--format=State",
-             "--noheader", "--parsable2"],
-            capture_output=True, text=True,
-        )
-        rows = [r.strip().rstrip("+") for r in sacct.stdout.splitlines() if r.strip()]
-        if rows:
-            state = rows[0].split()[0]
-            if state not in _SLURM_BUSY:
-                if state == "COMPLETED":
-                    return f"{state} ({jobid})"
-                raise RuntimeError(
-                    f"slurm job {jobid} ({script_name}) ended in state {state}")
-        time.sleep(poll_s)
+        state = _job_state(jobid)
+
+        if state == "" or state in _SLURM_BUSY:
+            out_of_queue_polls = 0
+            time.sleep(poll_s)
+            continue
+
+        if state == "COMPLETED":
+            return f"{state} ({jobid})"
+
+        if state in _SLURM_REQUEUEABLE:
+            # Preempted/interrupted: Slurm normally requeues it. Keep waiting
+            # while it is back in the queue; only give up if it stays out of
+            # the queue across two consecutive polls (i.e. it won't be retried).
+            if _in_queue(jobid):
+                out_of_queue_polls = 0
+                time.sleep(poll_s)
+                continue
+            out_of_queue_polls += 1
+            if out_of_queue_polls < 2:
+                time.sleep(poll_s)
+                continue
+            raise RuntimeError(
+                f"slurm job {jobid} ({script_name}) ended in state {state} "
+                f"and was not requeued")
+
+        raise RuntimeError(
+            f"slurm job {jobid} ({script_name}) ended in state {state}")
     raise TimeoutError(
         f"slurm job {jobid} ({script_name}) still running after {timeout_s}s")
 
