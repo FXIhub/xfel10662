@@ -18,8 +18,16 @@ taken; a file missing a given column contributes NaN for its shots.
 
 Per-pixel / per-module arrays are taken from the FIRST run (with a warning if a
 later run differs):
-    corner_position, basis_vectors, module_identifier, xyz_map, mask,
-    distance, x/y_pixel_size
+    module_identifier, xyz_map, mask, distance, x/y_pixel_size
+(xyz_map is the legacy per-pixel map and stays at the first run's geometry.)
+
+The AGIPD panel geometry changes per run, so corner_position and basis_vectors
+are written PER EVENT instead — each shot carries the geometry of its own run,
+broadcast from that run's file:
+    corner_position  (Nevents, NMODULES, 3)       axes experiment_identifier:module_identifier:coordinate
+    basis_vectors    (Nevents, NMODULES, 2, 3)    axes experiment_identifier:module_identifier:dimension:coordinate
+These are per-run-constant so they compress well; a run whose file lacks them
+falls back to the first run's geometry.
 
 Background (data_white) is merged by averaging
 ----------------------------------------------
@@ -33,6 +41,15 @@ W, the per-shot weighting is rescaled so the pixel-mean product is preserved:
         =>  b'_d = b_d * mean_pix(W_r) / mean_pix(W_merged)
 
 A per-shot `run` column is added so each shot can be traced back to its run.
+
+The per-pixel `powder` (sum of the good-hit frames, written per run by
+add_is_hit_cxi.py) is merged by summing the runs' powders.
+
+The per-shot `score/hit_score_mask` column (sum_pix(mask * frame), written per
+run by make_cxi_file.py) is concatenated like any other score column. The scalar
+`score/hit_score_mask_data_white` (sum_pix(mask * data_white), written per run by
+add_background_cxi.py) is merged by averaging across runs, matching the per-pixel
+mean used for data_white itself.
 
 Usage
 -----
@@ -57,14 +74,18 @@ from constants import PREFIX
 
 SAVED_HITS_DIR = f'{PREFIX}scratch/saved_hits'
 
+# scalar score merged by averaging across runs (not a per-shot column)
+SCALAR_SCORES = ('hit_score_mask_data_white',)
+
 DET_PATH    = 'entry_1/instrument_1/detector_1'
 SCORE_PATH  = f'{DET_PATH}/score'
 ES_PATH     = 'entry_1/instrument_1/electrospray'
 
-# per-module/per-pixel datasets copied from the first run (constant across shots)
-FIRST_RUN_DET = ('corner_position', 'basis_vectors', 'module_identifier',
-                 'xyz_map', 'mask', 'distance', 'x_pixel_size', 'y_pixel_size',
-                 'description')
+# per-module/per-pixel datasets copied from the first run (constant across shots).
+# corner_position and basis_vectors are NOT here: they track the per-run AGIPD
+# geometry and are written per-event instead (see scan_inputs / write_merged).
+FIRST_RUN_DET = ('module_identifier', 'xyz_map', 'mask', 'distance',
+                 'x_pixel_size', 'y_pixel_size', 'description')
 
 GZ = dict(compression='gzip', compression_opts=1, shuffle=True)
 
@@ -145,13 +166,15 @@ def scan_inputs(files):
     plain_keys += ['energy', 'pulse_energy']
     plain = {k: [] for k in plain_keys}
 
-    # union columns (present in some files only): score/* and electrospray/*
+    # union columns (present in some files only): score/* and electrospray/*.
+    # SCALAR_SCORES are per-file scalars (not per-shot) merged separately below.
     score_names = set()
     es_names    = set()
     for path in paths:
         with h5py.File(path, 'r') as f:
             if SCORE_PATH in f:
-                score_names.update(f[SCORE_PATH].keys())
+                score_names.update(k for k in f[SCORE_PATH].keys()
+                                   if k not in SCALAR_SCORES)
             if ES_PATH in f:
                 es_names.update(k for k in f[ES_PATH].keys()
                                 if k != 'experiment_identifier'
@@ -165,7 +188,16 @@ def scan_inputs(files):
     m_runs    = []          # per-run pixel-mean of data_white (or nan)
     bw_runs   = []          # per-run background_weighting (or None)
 
+    # per-run scalar scores, averaged across runs (see SCALAR_SCORES)
+    scalar_runs = {n: [] for n in SCALAR_SCORES}
+
+    powder = None           # running per-pixel sum of every run's powder
+
     first_det = {}          # first-run per-module datasets (+ attrs)
+
+    # per-run AGIPD panel geometry, broadcast to per-event below
+    geom_runs  = {'corner_position': [], 'basis_vectors': []}
+    geom_attrs = {}
 
     for i, path in enumerate(tqdm(paths, desc='scanning')):
         with h5py.File(path, 'r') as f:
@@ -194,19 +226,37 @@ def scan_inputs(files):
                 p = f'{ES_PATH}/{n_}'
                 lst.append(f[p][()] if p in f else np.full(n, np.nan, np.float32))
 
-            # first-run per-module arrays (and warn on later mismatch)
+            for n_, lst in scalar_runs.items():
+                p = f'{SCORE_PATH}/{n_}'
+                lst.append(float(f[p][()]) if p in f else np.nan)
+
+            # powder: per-pixel sum across all runs' powders
+            pp = f'{DET_PATH}/powder'
+            if pp in f:
+                w = f[pp][()].astype(np.float64)
+                powder = w if powder is None else powder + w
+
+            # first-run per-module arrays (and warn if mask differs later)
             if i == 0:
                 for k in FIRST_RUN_DET:
                     p = f'{DET_PATH}/{k}'
                     if p in f:
                         first_det[k] = (f[p][()], dict(f[p].attrs))
             else:
-                for k in ('corner_position', 'basis_vectors', 'mask'):
-                    p = f'{DET_PATH}/{k}'
-                    if k in first_det and p in f and \
-                       not np.array_equal(f[p][()], first_det[k][0]):
-                        print(f'warning: {k} in run {runs[i]} differs from first '
-                              f'run {runs[0]}; using first run')
+                p = f'{DET_PATH}/mask'
+                if 'mask' in first_det and p in f and \
+                   not np.array_equal(f[p][()], first_det['mask'][0]):
+                    print(f'warning: mask in run {runs[i]} differs from first '
+                          f'run {runs[0]}; using first run')
+
+            # per-run panel geometry (written per-event later); None if absent
+            for k in ('corner_position', 'basis_vectors'):
+                p = f'{DET_PATH}/{k}'
+                if p in f:
+                    geom_runs[k].append(f[p][()])
+                    geom_attrs.setdefault(k, dict(f[p].attrs))
+                else:
+                    geom_runs[k].append(None)
 
             # background
             wp = f'{DET_PATH}/data_white'
@@ -233,6 +283,21 @@ def scan_inputs(files):
     cols_es    = {k: np.concatenate(v) for k, v in es.items()}
     run_col = np.repeat(np.asarray(runs, np.uint16), nevents)
 
+    # per-event panel geometry: broadcast each run's array to its events. A run
+    # whose file lacks the geometry falls back to the first run that has it.
+    geom_cols = {}
+    for k, arrs in geom_runs.items():
+        ref = next((a for a in arrs if a is not None), None)
+        if ref is None:
+            continue
+        parts = []
+        for i, a in enumerate(arrs):
+            if a is None:
+                print(f'warning: run {runs[i]} has no {k}; using fallback geometry')
+                a = ref
+            parts.append(np.broadcast_to(a[None], (nevents[i],) + a.shape))
+        geom_cols[k] = np.concatenate(parts, axis=0)
+
     # merge background and rescale weighting
     data_white = None
     background_weighting = None
@@ -248,12 +313,19 @@ def scan_inputs(files):
                 bw_parts.append(np.full(len(bw), np.nan))
         background_weighting = np.concatenate(bw_parts).astype(np.float32)
 
+    # scalar scores: average across runs (skip if no run had the value)
+    scalar_score = {}
+    for n_, vals in scalar_runs.items():
+        if np.any(np.isfinite(vals)):
+            scalar_score[n_] = np.float32(np.nanmean(vals))
+
     return dict(
         total=total, frame_shape=frame_shape, paths=paths, nevents=nevents,
         start_time=min(start_times) if start_times else '',
         cols=cols, score=cols_score, es=cols_es, run=run_col,
-        first_det=first_det,
+        first_det=first_det, geom=geom_cols, geom_attrs=geom_attrs,
         data_white=data_white, background_weighting=background_weighting,
+        scalar_score=scalar_score, powder=powder,
     )
 
 
@@ -323,6 +395,19 @@ def write_merged(out_file, sample, info, proposal):
             for ak, av in attrs.items():
                 d.attrs[ak] = av
 
+        # per-event panel geometry (each shot carries its run's geometry)
+        geom_axes = {
+            'corner_position': 'experiment_identifier:module_identifier:coordinate',
+            'basis_vectors':
+                'experiment_identifier:module_identifier:dimension:coordinate',
+        }
+        for k, col in info['geom'].items():
+            d = detector.create_dataset(k, data=col.astype(np.float32),
+                                        chunks=(1,) + col.shape[1:], **GZ)
+            for ak, av in info['geom_attrs'].get(k, {}).items():
+                d.attrs[ak] = av
+            d.attrs['axes'] = geom_axes[k]
+
         detector['experiment_identifier'] = h5py.SoftLink(
             '/entry_1/experiment_identifier')
         for k, dt, axes in (('trainId', np.uint64, 'experiment_identifier'),
@@ -333,11 +418,19 @@ def write_merged(out_file, sample, info, proposal):
             d = detector.create_dataset(k, data=src.astype(dt), **GZ)
             d.attrs['axes'] = axes
 
-        if info['score']:
+        if info['score'] or info['scalar_score']:
             sg = detector.create_group('score')
             for name, col in info['score'].items():
                 d = sg.create_dataset(name, data=col.astype(np.float32), **GZ)
                 d.attrs['axes'] = 'experiment_identifier'
+            # per-file scalar scores averaged across runs (e.g. hit_score_mask_data_white)
+            for name, val in info['scalar_score'].items():
+                sg.create_dataset(name, data=val)
+
+        if info['powder'] is not None:
+            pw = detector.create_dataset('powder', data=info['powder'], **GZ)
+            pw.attrs['axes']  = 'module_identifier:y:x'
+            pw.attrs['units'] = 'counts'
 
         if info['data_white'] is not None:
             dw = detector.create_dataset('data_white', data=info['data_white'],

@@ -237,6 +237,17 @@ def merge_sidecar_into_cxi(sidecar_file, cxi_file):
                                 shuffle=True)
         bw.attrs['axes'] = 'experiment_identifier'
 
+        # Scalar hit_score_mask of the background image: sum_pix(mask * data_white).
+        # The background's contribution to a shot's score/hit_score_mask is then
+        # background_weighting * this value.
+        hit_mask = mcf.load_hit_mask(back.shape)
+        if hit_mask is not None:
+            score = det.require_group('score')
+            if 'hit_score_mask_data_white' in score:
+                del score['hit_score_mask_data_white']
+            score.create_dataset('hit_score_mask_data_white',
+                                 data=np.float32((back * hit_mask).sum()))
+
 
 def main():
     parser = argparse.ArgumentParser(

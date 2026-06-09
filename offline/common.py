@@ -29,6 +29,7 @@ def make_geom(run_no):
         from extra_geom.motors import AGIPD_1MMotors
         from extra.components import AGIPD1MQuadrantMotors
         from extra_data import open_run
+        import numpy as np
 
         run = open_run(int(EXP_ID), run_no)
 

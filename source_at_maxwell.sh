@@ -18,12 +18,21 @@ export REPO_ON_MAXWELL=${EXP_PREFIX}usr/Shared/xfel10662
 # upex-beamtime = reserved nodes, no preemption. It REQUIRES the reservation
 # set below (bare upex-beamtime is access-denied). When upex_010662 expires
 # (2026-06-09 05:00) revert to: PARTITION=upex with an empty RESERVATION.
-export PARTITION=upex-beamtime
+#export PARTITION=upex-beamtime
 # for more than 6 months after beamtime
+export PARTITION=upex
 #export PARTITION=allcpu
 #export PARTITION=allgpu
 #export RESERVATION=upex_${EXP_ID}
-export RESERVATION=upex_010662
+#export RESERVATION=upex_010662
+
+# Pin the Slurm cluster. Maxwell hosts three clusters (maxwell, solaris, hmz);
+# upex-beamtime/upex exist ONLY on maxwell. DAMNIT runs its extraction on
+# max-wn* nodes, which are solaris-cluster nodes, so a nested sbatch inherits
+# SLURM_CLUSTER_NAME=solaris and fails with "invalid partition specified:
+# upex-beamtime". Forcing the cluster makes every sbatch/squeue/scancel target
+# maxwell regardless of where it's launched from.
+export SLURM_CLUSTERS=maxwell
 
 
 # If invoked from a slurm job submitted by DAMNIT (which runs under its own

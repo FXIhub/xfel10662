@@ -13,7 +13,7 @@ cd $SCRIPT_DIR
 
 RES_ARG=""
 [ -n "${RESERVATION}" ] && RES_ARG="--reservation=${RESERVATION}"
-sbatch ${RES_ARG} <<EOT
+sbatch --wait ${RES_ARG} <<EOT
 #!/bin/bash
 
 #SBATCH --array=${1}
@@ -23,10 +23,10 @@ sbatch ${RES_ARG} <<EOT
 # silently breaks \`module load exfel-python\` (the exfel modulefile isn't on
 # DAMNIT's MODULEPATH; python keeps pointing at DAMNIT's pixi, which lacks
 # extra_geom/tqdm). Start clean; source_at_maxwell.sh sets the env we need.
-#SBATCH --export=NONE
-#SBATCH -J cxi-${EXP_ID}
-#SBATCH -o ${EXP_PREFIX}/scratch/log/cxi-${EXP_ID}-%A-%a.out
-#SBATCH -e ${EXP_PREFIX}/scratch/log/cxi-${EXP_ID}-%A-%a.out
+##SBATCH --export=NONE
+#SBATCH -J cxi-%a
+#SBATCH -o ${EXP_PREFIX}/scratch/log/cxi-%a.out
+#SBATCH -e ${EXP_PREFIX}/scratch/log/cxi-%a.out
 #SBATCH --partition=${PARTITION}
 
 # exit on first error
@@ -53,7 +53,7 @@ BG_PID=\$!
 wait \$MAKE_PID
 wait \$BG_PID
 
-python add_background_cxi.py \${run} --merge
+python add_background_cxi.py \${run} --merge --max-trains=1000
 
 echo cxi done
 

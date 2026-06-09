@@ -7,21 +7,17 @@ working_directory = Path(__file__).parent
 cxi_file = 'run.cxi'
 
 
-def get_frames(hit_sigma_threshold=10.0, max_frames=1024):
+def get_frames(hit_sigma_threshold=200.0, max_frames=100000):
     """
     """
     sig = None
     with h5py.File(cxi_file) as f:
-        k0 = 'entry_1/instrument_1/detector_1/hit_sigma'
-        k1 = 'entry_1/instrument_1/detector_1/score/hit_sigma'
-        if k0 in f:
-            sig = f[k0][()]
-
-        elif k1 in f:
-            sig = f[k1][()]
+        k = 'entry_1/instrument_1/detector_1/score/hit_score_mask'
+        if k in f:
+            sig = f[k][()]
 
         else:
-            print(f'warning {k0} and {k1} not found in {cxi_file}, skipping sigma threshold')
+            print(f'warning {k} not found in {cxi_file}, skipping sigma threshold')
 
 
     i = np.argsort(sig)[::-1][:max_frames]
@@ -33,17 +29,18 @@ def get_frames(hit_sigma_threshold=10.0, max_frames=1024):
 
 
 def make_pickle_file(
-        shape=(192, 192, 192),
-        rotation_order=5,
+        shape=(192, 192),
+        rotation_order=10,
         frames=None,
         P_thresh=0.,
-        classes=13,
-        classes_2D=0,
+        classes=0,
+        classes_2D=32,
         pixels_per_voxel=2,
-        P_mask_padding = (1, 32),
-        likelihood='fluence_free',
+        P_mask_padding = (1, 8),
+        likelihood='fluence_free', # Poisson, fluence_free
         #likelihood='Poisson',
-        update_model=False,
+        frame_model='background', # basic, background
+        update_model=True,
         output_file='config.pickle'):
     """
     make 6 face-view symmetry classes (D6) in a continuity group
@@ -71,17 +68,12 @@ def make_pickle_file(
     # ---------------
     # here the dq of the model depends
     # on the detector pixel size
-    x0 = 400e-6
-    y0 = 400e-6
-    dx = 400e-6
-
     xyz_offset = [[0, 0, 0]]
 
     scale = [1.0]
 
     dq = det.dq * pixels_per_voxel
     model_inv = emc3.Model(dq=dq, shape=shape, symmetry='inversion')
-    model_D6 = emc3.Model(dq=dq, shape=shape, symmetry='D6')
 
     # make pixels masks that account for:
     # model size, padding, scaling and offsets
@@ -128,41 +120,17 @@ def make_pickle_file(
             scale=scale,
             offsets=xyz_offset)
 
-    mapper_D6 = emc3.Mapper(
-            det,
-            model_D6,
-            rotation_order,
-            scale=scale,
-            offsets=xyz_offset)
-
-    # 5nm - 10nm
-    scale = np.linspace(0.5, 1.0, 10)
-    mapper_scale = emc3.Mapper(
-            det,
-            model_inv,
-            1,
-            scale=scale,
-            offsets=xyz_offset)
-
 
     config = {}
     config['working_directory'] = working_directory
     config['classes'] = []
     config['continuity_groups'] = []
 
-    for c in range(classes):
-        if c < 7:
-            symmetry = 'D6'
-            mapper_c = mapper_D6
-        else:
-            symmetry = 'inversion'
-            mapper_c = mapper_inv
+    for c in range(classes_2D):
+        symmetry = 'inversion'
+        mapper_c = mapper_inv
 
         model_c = emc3.Model(dq=dq, shape=shape, symmetry=symmetry, class_id=c)
-
-        # for the sphere
-        if c == 12:
-            mapper_c = mapper_scale
 
         config['classes'].append(
                 {
@@ -175,7 +143,7 @@ def make_pickle_file(
                 'mapper': mapper_c,
                 'interpolation_forward': 'linear',
                 'likelihood': likelihood,
-                'frame_model': 'background',
+                'frame_model': frame_model,
                 'maximise': 'I',
                 'update_model': update_model,
                 'filter_model': None,
@@ -192,4 +160,5 @@ def make_pickle_file(
 
 if __name__ == '__main__':
     make_pickle_file()
+
 

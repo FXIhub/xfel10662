@@ -11,15 +11,14 @@ source $PARENT_DIR/source_at_maxwell.sh
 
 RES_ARG=""
 [ -n "${RESERVATION}" ] && RES_ARG="--reservation=${RESERVATION}"
-sbatch ${RES_ARG} <<EOT
+sbatch --wait ${RES_ARG} <<EOT
 #!/bin/bash
 
 #SBATCH --array=${1}
 #SBATCH --time=01:00:00
-#SBATCH -J vds-${EXP_ID}-\${a}
-#SBATCH -o ${EXP_PREFIX}/scratch/log/vds-${EXP_ID}-%A-%a.out
-#SBATCH -e ${EXP_PREFIX}/scratch/log/vds-${EXP_ID}-%A-%a.out
-#SBATCH --export=NONE
+#SBATCH -J vds-\${a}
+#SBATCH -o ${EXP_PREFIX}/scratch/log/vds-%a.out
+#SBATCH -e ${EXP_PREFIX}/scratch/log/vds-%a.out
 #SBATCH --partition=${PARTITION}
 
 set -e

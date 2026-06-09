@@ -1,6 +1,11 @@
 # xfel10662
 3D Diffractive Imaging of Single-Protein with Hard X-ray Laser at the SFX/SPB instrument
 
+## Links
+- [zulip run logs](https://mylog.connect.xfel.eu/#narrow/channel/982-SPB_10662_HenryChapman)
+- [damnit table](https://damnit.xfel.eu/app/proposal/10662)
+- [discord](https://discord.gg/9fhycZz6)
+
 ## Files
 ```text
 Experiment root  : /gpfs/exfel/exp/SPB/202601/p010662/
@@ -117,5 +122,4 @@ The cells in the spread sheet are determined by the `/DAMNIT/context.py` file.
 /entry_1/sample_1/name   Dataset {SCALAR}
 /entry_1/start_time      Dataset {SCALAR}
 /entry_1/title           Dataset {SCALAR}
-
 ```

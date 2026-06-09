@@ -7,8 +7,8 @@ All per-shot quantities are read from native EuXFEL Karabo sources via extra_dat
     pulse_energy                                      <-  XGM (μJ -> J)
     photon energy / wavelength                        <-  undulator (keV -> J/m)
     electrospray flows + HV voltage/current           <-  AEROSOL/LIQUIDJET/EXP_HV (per-train)
-    trainId, cellId, pulseId per frame                <-  AGIPD module 0 CORR
-Hit-finder pulses are aligned to AGIPD frames by (trainId, pulseId).
+    trainId, cellId, pulseId per frame                <-  VDS (suspect trains excluded)
+Hit-finder pulses are aligned to VDS frames by (trainId, pulseId).
 
 Layout (CXIDB spec, NeXus-compatible). Per-shot arrays are indexed by
 experiment_identifier; per-pixel arrays by module_identifier:y:x.
@@ -49,6 +49,7 @@ experiment_identifier; per-pixel arrays by module_identifier:y:x.
               photon_counts?    (Nevents,)     float32             LITFRM energy per detector frame
               hit_score?        (Nevents,)     float32             SPI_HITFINDER hitscore
               hit_sigma?        (Nevents,)     float32             (hitscore - threshold.mu)/threshold.sig
+              hit_score_mask?   (Nevents,)     float32             sum_pix(hit_finding_mask * frame)
             data                (Nevents, NMODULES, ss, fs) uint8  photon counts, per-cell-masked
             experiment_identifier -> /entry_1/experiment_identifier
         data_1/                                                    NXdata
@@ -89,8 +90,13 @@ from constants import PREFIX
 # Standard CXI path inside the per-run VDS file (as written by extra_data.write_virtual_cxi)
 VDS_DATA_PATH = '/entry_1/instrument_1/detector_1/data'
 
+# Good-pixel mask (good = True) used for the per-shot score/hit_score_mask column,
+# computed as sum_pix(mask * frame). Same definition as merge_cxi.py.
+HIT_MASK_PATH = f'{PREFIX}scratch/det/hit_finding_mask.h5'
+
 # Karabo sources for native EuXFEL data. Edit these if facility config changes.
-AGIPD_FRAME_COORD_SRC = 'SPB_DET_AGIPD1M-1/CORR/0CH0:output'      # module 0 (defines VDS frame coords)
+# (Frame coordinates trainId/pulseId/cellId come from the VDS, not a Karabo source,
+#  so that suspect trains excluded from the VDS stay excluded here too.)
 HITFINDER_SRC         = 'SPB_DET_AGIPD1M-1/REDU/SPI_HITFINDER:output'
 LITFRM_SRC            = 'SPB_IRU_AGIPD1M1/REDU/LITFRM:output'
 XGM_SRC               = 'SPB_XTD9_XGM/XGM/DOOCS:output'           # downstream XGM near sample
@@ -131,10 +137,11 @@ def probe_vds(vds_file):
 def parse_args():
     p = argparse.ArgumentParser(description='Write hits to a spec-compliant CXI file')
     p.add_argument('run', type=int, help='Run number')
-    p.add_argument('-m', '--mask', type=str,
-                   help=f'Optional extra good-pixel mask in {PREFIX}scratch/det/, '
-                        'AND-ed with the per-cell run mask before being written to '
-                        '/entry_1/instrument_1/detector_1/mask. Frame data is never masked.')
+    p.add_argument('-m', '--mask', type=str, default='mask.h5',
+                   help=f'Good-pixel mask in {PREFIX}scratch/det/ (default mask.h5) '
+                        'written to /entry_1/instrument_1/detector_1/mask instead of '
+                        'the facility AGIPD calibration mask. If the file is missing, '
+                        'fall back to the calibration mask. Frame data is never masked.')
     p.add_argument('-n', '--nproc', type=int, default=1, help='number of processes')
     p.add_argument('--max_frames', type=int, default=2048, help='maximum number of hits to include')
     args = p.parse_args()
@@ -257,21 +264,16 @@ def load_facility_data(dc, vds_file):
         pulse_energy                      (Nframes,) float32 J, NaN if XGM missing
         wavelength                        (Nframes,) float32 m, NaN if undulator missing
     """
-    # 1) AGIPD module 0 defines the (trainId, pulseId, cellId) of every VDS frame.
-    agipd = dc[AGIPD_FRAME_COORD_SRC]
-    a_train = agipd['image.trainId'].ndarray().ravel().astype(np.int64)
-    a_pulse = agipd['image.pulseId'].ndarray().ravel().astype(np.int64)
-    a_cell  = agipd['image.cellId'].ndarray().ravel().astype(np.int64)
-    Nframes = len(a_train)
-
-    # Cross-check against the VDS
+    # 1) The VDS defines the (trainId, pulseId, cellId) of every frame written to the
+    #    CXI. It is built with `extra-data-make-virtual-cxi --exc-suspect-trains` (see
+    #    submit_vds.sh), so suspect trains are dropped. We therefore take the frame
+    #    coordinates from the VDS itself: a direct extra_data read of the AGIPD source
+    #    (data='all') includes those suspect trains and disagrees on frame count.
     with h5py.File(vds_file) as g:
-        vds_train = g['/entry_1/trainId'][:]
-        vds_cell  = g['/entry_1/cellId'][:, 0]
-    assert len(vds_train) == Nframes, \
-        f'VDS frame count {len(vds_train)} disagrees with AGIPD module 0 {Nframes}'
-    assert np.array_equal(vds_train, a_train), 'VDS trainId disagrees with AGIPD module 0'
-    assert np.array_equal(vds_cell,  a_cell),  'VDS cellId disagrees with AGIPD module 0'
+        a_train = g['/entry_1/trainId'][:].astype(np.int64)
+        a_pulse = g['/entry_1/pulseId'][:].astype(np.int64)
+        a_cell  = g['/entry_1/cellId'][:, 0].astype(np.int64)
+    Nframes = len(a_train)
 
     out = dict(
         trainId=a_train.astype(np.uint64),
@@ -374,15 +376,28 @@ def load_facility_data(dc, vds_file):
     return out
 
 
-def build_detector_mask(vds_file, extra_mask_file, frame_shape):
+MASK_DSETS = ('data', 'entry_1/good_pixels', 'mask', 'good_pixels')
+
+
+def load_good_pixels(path):
+    """Load a boolean good-pixel map (True = good) from a mask file, auto-detecting
+    the dataset among MASK_DSETS."""
+    with h5py.File(path) as f:
+        for dset in MASK_DSETS:
+            if dset in f:
+                return f[dset][()].astype(bool)
+    raise RuntimeError(f'no mask dataset found in {path} '
+                       f'(tried {", ".join(MASK_DSETS)})')
+
+
+def calibration_mask(vds_file, frame_shape):
     """Derive a per-pixel mask from the AGIPD calibration mask shipped in the VDS
     (/entry_1/instrument_1/detector_1/mask, written by extra_data.write_virtual_cxi).
 
     For each unique cellId we sample one frame's mask — calibration constants are
     per memory cell, so this captures the per-cell variation without scanning all
     frames. A pixel is treated as 'good' only if its mask is 0 (no bad bits set)
-    in *every* sampled cell. Optional extra mask is AND-ed in. Returned only for
-    writing to /detector_1/mask — frames themselves are written raw."""
+    in *every* sampled cell."""
     mask_path = '/entry_1/instrument_1/detector_1/mask'
     with h5py.File(vds_file) as g:
         if mask_path not in g:
@@ -397,11 +412,44 @@ def build_detector_mask(vds_file, extra_mask_file, frame_shape):
         for idx in first_idx:
             good &= (np.squeeze(mask_dset[int(idx)]) == 0)
         ncells = len(first_idx)
-
-    if extra_mask_file is not None:
-        with h5py.File(extra_mask_file) as f:
-            good &= f['entry_1/good_pixels'][()].astype(bool)
     return good, ncells
+
+
+def build_detector_mask(vds_file, mask_file, frame_shape):
+    """Good-pixel mask written to /detector_1/mask (True = good; frames stay raw).
+
+    The default mask file in scratch/det (mask_file) is used in place of the
+    facility AGIPD calibration mask. If that file is missing, fall back to the
+    per-cell calibration mask shipped in the VDS.
+
+    Returns (good, source) where source describes where the mask came from."""
+    if mask_file is not None and os.path.exists(mask_file):
+        good = load_good_pixels(mask_file)
+        if good.shape != frame_shape:
+            raise RuntimeError(f'mask in {mask_file} has shape {good.shape} != '
+                               f'frame shape {frame_shape}')
+        return good, mask_file
+
+    if mask_file is not None:
+        print(f'warning: mask file {mask_file} not found; falling back to the '
+              'facility calibration mask')
+    good, ncells = calibration_mask(vds_file, frame_shape)
+    return good, f'VDS calibration mask ({ncells} cells)'
+
+
+def load_hit_mask(frame_shape):
+    """Load the hit-finding good-pixel mask (good = True) for score/hit_score_mask,
+    or None if absent. Must match the per-frame shape (NMODULES, y, x)."""
+    if not os.path.exists(HIT_MASK_PATH):
+        print(f'warning: {HIT_MASK_PATH} not found; skipping hit_score_mask')
+        return None
+    with h5py.File(HIT_MASK_PATH) as f:
+        mask = f['data'][()].astype(bool)
+    if mask.shape != frame_shape:
+        raise RuntimeError(
+            f'hit mask shape {mask.shape} in {HIT_MASK_PATH} != frame shape '
+            f'{frame_shape}')
+    return mask
 
 
 def geometry_to_cxi(geom_file):
@@ -446,7 +494,7 @@ def geometry_to_cxi(geom_file):
 def write_initial_file(args, ev, indices, proposal, start_time, sample_name,
                        corner_position, basis_vectors, module_identifier,
                        pixel_size, xyz_map, distance, detector_good_pixels,
-                       frame_shape):
+                       frame_shape, have_hit_mask=False):
     Nevents = len(indices)
     photon_energy = (sc.h * sc.c / ev['wavelength']).astype(np.float32)
 
@@ -553,10 +601,15 @@ def write_initial_file(args, ev, indices, proposal, start_time, sample_name,
                                     chunks=frame_shape, **gz)
         m.attrs['axes'] = 'module_identifier:y:x'
 
-        if score_columns:
+        if score_columns or have_hit_mask:
             score_grp = detector.create_group('score')
             for name, col in score_columns.items():
                 ds = score_grp.create_dataset(name, data=col, **gz)
+                ds.attrs['axes'] = 'experiment_identifier'
+            # filled per-shot in write_frames as sum_pix(hit_mask * frame)
+            if have_hit_mask:
+                ds = score_grp.create_dataset('hit_score_mask', shape=(Nevents,),
+                                              dtype=np.float32, **gz)
                 ds.attrs['axes'] = 'experiment_identifier'
 
         data = detector.create_dataset(
@@ -575,9 +628,13 @@ def write_initial_file(args, ev, indices, proposal, start_time, sample_name,
         data_group['data'] = h5py.SoftLink('/entry_1/instrument_1/detector_1/data')
 
 
-def write_frames(args, ev, indices, frame_shape, vds_dtype):
+def write_frames(args, ev, indices, frame_shape, vds_dtype, hit_mask=None):
     """Fill detector_1/data with raw frames from the VDS (no masking applied).
-    Parallelised over ranks; HDF5 writes serialised through a lock."""
+    Parallelised over ranks; HDF5 writes serialised through a lock.
+
+    If a hit-finding `hit_mask` is given, also fill score/hit_score_mask with the
+    per-shot sum of the (clipped) frame over the good (True) pixels, computed from
+    the same frames so the VDS is read only once."""
     Nevents = len(indices)
     size = max(1, args.nproc)
     events_rank = np.linspace(0, Nevents, size + 1).astype(int)
@@ -602,10 +659,15 @@ def write_frames(args, ev, indices, frame_shape, vds_dtype):
                 buf[i] = np.squeeze(data[my_idx[i]])
 
         hi = np.iinfo(np.uint8).max
+        frames = np.clip(buf, 0, hi).astype(np.uint8)
+        if hit_mask is not None:
+            hit_score = (frames * hit_mask).sum(axis=(1, 2, 3)).astype(np.float32)
         with lock, h5py.File(args.output_file, 'a') as f:
-            dset = f['entry_1/instrument_1/detector_1/data']
-            for i in range(len(my_idx)):
-                dset[events_rank[rank] + i] = np.clip(buf[i], 0, hi)
+            det = f['entry_1/instrument_1/detector_1']
+            lo, n = events_rank[rank], len(my_idx)
+            det['data'][lo:lo + n] = frames
+            if hit_mask is not None:
+                det['score/hit_score_mask'][lo:lo + n] = hit_score
 
     lock = mp.Lock()
     jobs = [mp.Process(target=worker, args=(r, lock)) for r in range(size)]
@@ -627,11 +689,12 @@ def main():
     frame_shape, nmodules, vds_dtype = probe_vds(args.vds_file)
     print(f'VDS frame shape {frame_shape}, {nmodules} modules, dtype {vds_dtype}')
 
-    print(f'deriving per-pixel mask from VDS calibration mask {args.vds_file}')
-    detector_good, ncells = build_detector_mask(
+    detector_good, mask_source = build_detector_mask(
         args.vds_file, args.mask_file, frame_shape)
     masked_frac = 100 * np.sum(~detector_good) / detector_good.size
-    print(f'{masked_frac:.2f}% pixels masked (sampled across {ncells} cells)')
+    print(f'{masked_frac:.2f}% pixels masked (from {mask_source})')
+
+    hit_mask = load_hit_mask(frame_shape)
 
     (corner_position, basis_vectors, module_identifier,
      pixel_size, xyz_map, distance) = geometry_to_cxi(args.geom_file)
@@ -655,9 +718,10 @@ def main():
     print(f'initialising {args.output_file}')
     write_initial_file(args, ev, indices, proposal, start_time, sample_name,
                        corner_position, basis_vectors, module_identifier,
-                       pixel_size, xyz_map, distance, detector_good, frame_shape)
+                       pixel_size, xyz_map, distance, detector_good, frame_shape,
+                       have_hit_mask=hit_mask is not None)
 
-    write_frames(args, ev, indices, frame_shape, vds_dtype)
+    write_frames(args, ev, indices, frame_shape, vds_dtype, hit_mask)
     print('Done')
 
 

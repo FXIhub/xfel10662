@@ -12,15 +12,15 @@ cd $SCRIPT_DIR
 
 RES_ARG=""
 [ -n "${RESERVATION}" ] && RES_ARG="--reservation=${RESERVATION}"
-sbatch ${RES_ARG} <<EOT
+sbatch --wait ${RES_ARG} <<EOT
 #!/bin/bash
 
 #SBATCH --array=${1}
-#SBATCH --time=02:00:00
-#SBATCH --export=NONE
-#SBATCH -J classification-${EXP_ID}
-#SBATCH -o ${EXP_PREFIX}/scratch/log/classification-${EXP_ID}-%A-%a.out
-#SBATCH -e ${EXP_PREFIX}/scratch/log/classification-${EXP_ID}-%A-%a.out
+#SBATCH --time=04:00:00
+##SBATCH --export=NONE
+#SBATCH -J classification-%a
+#SBATCH -o ${EXP_PREFIX}/scratch/log/classification-%a.out
+#SBATCH -e ${EXP_PREFIX}/scratch/log/classification-%a.out
 #SBATCH --partition=${PARTITION}
 
 # exit on first error
@@ -88,6 +88,12 @@ export MPICH_CPU_BIND_STEP=\$SLURM_CPUS_ON_NODE
 
 which mpiexec
 mpiexec --version
+
+# srun (the mvapich2 launcher) aborts with "cpus-per-task set by two different
+# environment variables SLURM_CPUS_PER_TASK != SLURM_TRES_PER_TASK" when both
+# are present and disagree (Slurm >=23.11). Clear them; OMP_NUM_THREADS above
+# already sets threading.
+unset SLURM_CPUS_PER_TASK SLURM_TRES_PER_TASK
 
 mpirun -n \${SLURM_NTASKS:-1} python run_emc.py
 
