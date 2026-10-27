@@ -131,11 +131,24 @@ config = pickle.load(open(config_file, 'rb'))
 config['P_thresh_frames'] = 1      # keep only the most-likely term per frame
 config['update_fluence'] = True
 
-# initialise per-frame fluence weights (overwritten by w_update below)
+# initialise per-frame fluence weights (overwritten by w_update below).
+# Also seed b_d from the CXI's *current* background_weighting: the sizing config
+# froze b_d into its back_*.h5 files when it was built, and emc3's
+# BackCXI.load_from_file() takes b_d from ./fluence.h5 in preference to those, so
+# a corrected background_weighting (fix_pulse_energy_cxi.py) reaches the w_d fit
+# without rebuilding config.pickle and the logR matrix.
 if rank == 0:
+    frames = np.asarray(config['classes'][0]['data'].frames)
+    with h5py.File(cxi_file, 'r') as f:
+        b_d = f['entry_1/instrument_1/detector_1/background_weighting'][()][frames]
+    B_di = config['classes'][0]['data'].B_di
+    b_d = B_di._floor_positive(b_d.astype(np.float32), B_di.floor_rel)
+    if Path(config['fluence_file']).resolve() != Path('fluence.h5').resolve():
+        raise RuntimeError(f"fluence_file {config['fluence_file']} is not ./fluence.h5, "
+                           'so emc3 would not pick up the refreshed b_d')
     with h5py.File(config['fluence_file'], 'w') as f:
-        D = config['classes'][0]['data'].shape[0]
-        f['w_d'] = np.ones(D, dtype=float)
+        f['w_d'] = np.ones(len(frames), dtype=float)
+        f['b_d'] = b_d
 comm.Barrier()
 
 # ---- logR: reuse sizing's matrix if present, else recompute ------------------
@@ -226,6 +239,8 @@ if rank == 0:
         proc['command'] = ' '.join(sys.argv)
         proc['date'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         proc['version'] = getattr(emc3, '__version__', 'unknown')
+        proc['note'] = ('background B_di = background_weighting * data_white, with '
+                        'background_weighting read from this CXI at fit time')
 
     if fluence is not None:
         fmed = float(np.median(fluence)) if len(fluence) else float('nan')
