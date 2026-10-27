@@ -120,8 +120,9 @@ ELECTROSPRAY_SRCS = {
     'current':       ('SPB_EXP_HV/MDL/SHQ1',                'channel1.current.value'),
 }
 
-PULSE_ENERGY_DESCRIPTION = ('XGM pulse energy of the pulse that produced this frame '
-                            '(XGM slot from LITFRM data.xgmPulseId); NaN if unavailable')
+PULSE_ENERGY_DESCRIPTION = ('XGM pulse energy of the pulse that produced this frame (XGM slot '
+                            'from LITFRM data.xgmPulseId at the pulse rank of the frame); '
+                            'NaN if unavailable')
 
 # CXI mask bits (cxi.h)
 CXI_PIXEL_IS_BAD = 0x00000080
@@ -273,12 +274,17 @@ def load_pulse_energy(dc, a_train, a_pulse):
             return E
 
     # detectorPulseId / nPulsePerFrame are (Ntrains, Nframe_slots); xgmPulseId is
-    # (Ntrains, 4096) with its first Nframe_slots columns per frame, then padding.
+    # (Ntrains, 4096) and lists the XGM slot of each X-ray *pulse* in the train,
+    # then padding. So the XGM slot of frame c is xgmPulseId[cumsum(nPulsePerFrame)[c] - 1]
+    # (frame slot 0 carries no pulse here, so indexing xgmPulseId by frame slot
+    # gives the next pulse). This reproduces LITFRM data.energyPerFrame exactly.
     lf = dc[LITFRM_SRC]
     lf_train, lf_pulse = _pulse_resolved(lf['data.detectorPulseId'])
     _, lf_npulse       = _pulse_resolved(lf['data.nPulsePerFrame'])
-    n_slots = lf['data.detectorPulseId'].ndarray().shape[1]
-    lf_xgm_pulse = lf['data.xgmPulseId'].ndarray()[:, :n_slots].ravel()
+    npf  = lf['data.nPulsePerFrame'].ndarray().astype(np.int64)
+    rank = np.clip(np.cumsum(npf, axis=1) - 1, 0, None)
+    lf_xgm_pulse = np.take_along_axis(
+        lf['data.xgmPulseId'].ndarray().astype(np.int64), rank, axis=1).ravel()
     m, idx = _align_by_pair(a_train, a_pulse, lf_train, lf_pulse)
     xgm_pulse = lf_xgm_pulse[idx].astype(np.int64)
     m &= lf_npulse[idx] > 0

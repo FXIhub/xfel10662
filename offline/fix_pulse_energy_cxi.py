@@ -6,13 +6,18 @@ its columns are XGM pulse slots (mapping: LITFRM data.xgmPulseId). So most
 frames got the energy of the wrong pulse, an empty slot (~μJ noise) or NaN
 (AGIPD pulseId >= 1000 XGM columns). See make_cxi_file.load_pulse_energy.
 
+A first version of this fix indexed xgmPulseId by frame slot instead of pulse
+rank, which gives every frame the energy of the next pulse. Files in that state
+(recognised by FRAME_SLOT_DESCRIPTION) are corrected the same way, with that
+mapping as the previous pulse energy.
+
 background_weighting = E_norm * a_t (add_background_cxi.compute_weighting)
 inherited the bad E_norm. The per-train factor a_t is recovered exactly from the
 sidecar as b_old / E_norm_old, so no VDS rescan is needed:
     b_new = E_norm_new * b_old / E_norm_old
 
 Checks, per run, before writing (the run is skipped if either fails):
-    - the reconstructed old pulse energy matches the stored CXI pulse_energy
+    - the reconstructed previous pulse energy matches the stored CXI pulse_energy
     - the recovered a_t is constant within each train
 
 Updated in place:
@@ -48,6 +53,33 @@ VI_PATH = 'entry_1/instrument_1/detector_1/vds_index'
 SIDECAR_BW = 'background_weighting_per_vds_frame'
 
 
+# pulse_energy description written by the first, frame-slot version of the fix
+FRAME_SLOT_DESCRIPTION = ('XGM pulse energy of the pulse that produced this frame '
+                          '(XGM slot from LITFRM data.xgmPulseId); NaN if unavailable')
+
+
+def frame_slot_pulse_energy(dc, a_train, a_pulse):
+    """The first version of the fix: xgmPulseId indexed by frame slot."""
+    lf = dc[mcf.LITFRM_SRC]
+    lf_train, lf_pulse = mcf._pulse_resolved(lf['data.detectorPulseId'])
+    _, lf_npulse = mcf._pulse_resolved(lf['data.nPulsePerFrame'])
+    n_slots = lf['data.detectorPulseId'].ndarray().shape[1]
+    lf_xgm_pulse = lf['data.xgmPulseId'].ndarray()[:, :n_slots].ravel()
+    m, idx = mcf._align_by_pair(a_train, a_pulse, lf_train, lf_pulse)
+    xgm_pulse = lf_xgm_pulse[idx].astype(np.int64)
+    m &= lf_npulse[idx] > 0
+    kd = dc[mcf.XGM_SRC, 'data.intensityTD']
+    xgm_data = kd.ndarray()
+    xgm_tid = np.asarray(kd.train_id_coordinates(), dtype=np.int64)
+    order = np.argsort(xgm_tid)
+    row = np.clip(np.searchsorted(xgm_tid[order], a_train), 0, len(xgm_tid) - 1)
+    m &= xgm_tid[order][row] == a_train
+    m &= (xgm_pulse >= 0) & (xgm_pulse < xgm_data.shape[1])
+    E = np.full(len(a_train), np.nan, dtype=np.float32)
+    E[m] = xgm_data[order[row[m]], xgm_pulse[m]] * 1e-6
+    return E
+
+
 def old_pulse_energy(dc, a_train, a_pulse):
     """The buggy make_cxi_file lookup: intensityTD[train, AGIPD pulseId]."""
     E = np.full(len(a_train), np.nan, dtype=np.float32)
@@ -81,7 +113,8 @@ def fix_run(run, proposal, dry_run):
     sidecar_file = f'{cxi_file}.bg.h5'
 
     with h5py.File(cxi_file, 'r') as f:
-        if f[PE_PATH].attrs.get('description') == mcf.PULSE_ENERGY_DESCRIPTION:
+        description = f[PE_PATH].attrs.get('description')
+        if description == mcf.PULSE_ENERGY_DESCRIPTION:
             return f'r{run:04d} already fixed, skipped'
         vds_idx = f[VI_PATH][()].astype(np.int64)
         pe_stored = f[PE_PATH][()]
@@ -92,7 +125,9 @@ def fix_run(run, proposal, dry_run):
         a_pulse = g['/entry_1/pulseId'][:].astype(np.int64)
 
     dc = extra_data.open_run(proposal, run, data='all')
-    E_old = old_pulse_energy(dc, a_train, a_pulse)
+    previous = (frame_slot_pulse_energy if description == FRAME_SLOT_DESCRIPTION
+                else old_pulse_energy)
+    E_old = previous(dc, a_train, a_pulse)
     E_new = mcf.load_pulse_energy(dc, a_train, a_pulse)
 
     # allow last-bit float32 differences: the files were written under a numpy
