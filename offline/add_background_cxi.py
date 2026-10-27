@@ -191,12 +191,16 @@ def compute_weighting(ev, frame_counts, back_counts, emin=1e-3):
         if len(n) > 0 and np.all(np.isfinite(Kphot[n])):
             a_d[m] = np.sum(Kphot[n]) / (back_counts * len(n))
 
+    return (energy_norm(E, emin) * a_d).astype(np.float32)
+
+
+def energy_norm(E, emin=1e-3):
+    """E_d / <E> over shots with E > emin (J); 1 for shots without a usable E."""
+    E = np.asarray(E)
     good_e = np.isfinite(E) & (E > emin)
     if good_e.any():
-        E_norm = np.where(good_e, E / E[good_e].mean(), 1.0)
-    else:
-        E_norm = np.ones_like(E)
-    return (E_norm * a_d).astype(np.float32)
+        return np.where(good_e, E / E[good_e].mean(), 1.0)
+    return np.ones_like(E)
 
 
 def write_sidecar(sidecar_file, background, weighting_per_vds_frame):

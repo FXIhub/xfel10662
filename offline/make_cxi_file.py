@@ -4,7 +4,7 @@ Write a CXI v1.6 file for the hits in a run.
 All per-shot quantities are read from native EuXFEL Karabo sources via extra_data:
     hit_flag, miss_flag, hit_score, threshold mu/sig  <-  SPI_HITFINDER
     photons (energy per detector frame)               <-  LITFRM
-    pulse_energy                                      <-  XGM (μJ -> J)
+    pulse_energy                                      <-  XGM (μJ -> J), slot via LITFRM xgmPulseId
     photon energy / wavelength                        <-  undulator (keV -> J/m)
     electrospray flows + HV voltage/current           <-  AEROSOL/LIQUIDJET/EXP_HV (per-train)
     trainId, cellId, pulseId per frame                <-  VDS (suspect trains excluded)
@@ -119,6 +119,9 @@ ELECTROSPRAY_SRCS = {
     'voltage':       ('SPB_EXP_HV/MDL/SHQ1',                'channel1.voltage.value'),
     'current':       ('SPB_EXP_HV/MDL/SHQ1',                'channel1.current.value'),
 }
+
+PULSE_ENERGY_DESCRIPTION = ('XGM pulse energy of the pulse that produced this frame '
+                            '(XGM slot from LITFRM data.xgmPulseId); NaN if unavailable')
 
 # CXI mask bits (cxi.h)
 CXI_PIXEL_IS_BAD = 0x00000080
@@ -252,6 +255,49 @@ def _pulse_resolved(kd):
         f'unexpected layout: data shape {data.shape}, train_id_coordinates shape {tids.shape}')
 
 
+def load_pulse_energy(dc, a_train, a_pulse):
+    """Per-frame XGM pulse energy (J, NaN if unavailable) for AGIPD frames given
+    by (trainId, pulseId).
+
+    XGM data.intensityTD columns are XGM pulse slots, NOT AGIPD pulseIds (e.g.
+    AGIPD pulseId 0,4,8,... -> XGM slot 0,2,4,... or 0,2,3,5,... depending on
+    the bunch pattern; AGIPD pulseIds also run past the 1000 XGM columns). The
+    mapping comes from LITFRM's data.xgmPulseId, matched by (trainId,
+    detectorPulseId). Frames with nPulsePerFrame == 0 saw no X-ray pulse -> NaN.
+    """
+    Nframes = len(a_train)
+    E = np.full(Nframes, np.nan, dtype=np.float32)
+    for src in (LITFRM_SRC, XGM_SRC):
+        if src not in dc.all_sources:
+            print(f'WARNING: {src} not in run; pulse_energy column will be NaN')
+            return E
+
+    # detectorPulseId / nPulsePerFrame are (Ntrains, Nframe_slots); xgmPulseId is
+    # (Ntrains, 4096) with its first Nframe_slots columns per frame, then padding.
+    lf = dc[LITFRM_SRC]
+    lf_train, lf_pulse = _pulse_resolved(lf['data.detectorPulseId'])
+    _, lf_npulse       = _pulse_resolved(lf['data.nPulsePerFrame'])
+    n_slots = lf['data.detectorPulseId'].ndarray().shape[1]
+    lf_xgm_pulse = lf['data.xgmPulseId'].ndarray()[:, :n_slots].ravel()
+    m, idx = _align_by_pair(a_train, a_pulse, lf_train, lf_pulse)
+    xgm_pulse = lf_xgm_pulse[idx].astype(np.int64)
+    m &= lf_npulse[idx] > 0
+
+    # data.intensityTD is (Ntrains, Npulses_max) in μJ
+    kd = dc[XGM_SRC, 'data.intensityTD']
+    xgm_data = kd.ndarray()
+    xgm_tid  = np.asarray(kd.train_id_coordinates(), dtype=np.int64)
+    order = np.argsort(xgm_tid)
+    row = np.clip(np.searchsorted(xgm_tid[order], a_train), 0, len(xgm_tid) - 1)
+    m &= xgm_tid[order][row] == a_train
+    m &= (xgm_pulse >= 0) & (xgm_pulse < xgm_data.shape[1])
+
+    E[m] = xgm_data[order[row[m]], xgm_pulse[m]] * 1e-6       # μJ → J
+    if (~m).any():
+        print(f'WARNING: {int((~m).sum())}/{Nframes} frames have no XGM pulse energy')
+    return E
+
+
 def load_facility_data(dc, vds_file):
     """Pull per-shot quantities from native EuXFEL sources via extra_data, aligned to
     VDS frame index.
@@ -322,24 +368,8 @@ def load_facility_data(dc, vds_file):
     else:
         print(f'WARNING: {LITFRM_SRC} not in run; photon_counts column will be NaN')
 
-    # 4) Per-pulse XGM pulse energy (J). data.intensityTD is typically μJ.
-    out['pulse_energy'] = np.full(Nframes, np.nan, dtype=np.float32)
-    if XGM_SRC in dc.all_sources:
-        xgm = dc[XGM_SRC]
-        # data.intensityTD is (Ntrains, Npulses_max) and is padded; we index by xgmPulseId-like
-        # tables. The per-pulse train arrives as ndarray() (Ntrains, Np). To align with AGIPD,
-        # broadcast intensityTD[train_index, pulseId] via lookup.
-        xgm_data = xgm['data.intensityTD'].ndarray()                # (Ntrains, Np_max) μJ
-        xgm_tid  = xgm['data.intensityTD'].train_id_coordinates()
-        train_to_row = {int(t): i for i, t in enumerate(xgm_tid)}
-        for k in range(Nframes):
-            row = train_to_row.get(int(a_train[k]))
-            if row is None: continue
-            p = int(a_pulse[k])
-            if 0 <= p < xgm_data.shape[1]:
-                out['pulse_energy'][k] = xgm_data[row, p] * 1e-6   # μJ → J
-    else:
-        print(f'WARNING: {XGM_SRC} not in run; pulse_energy column will be NaN')
+    # 4) Per-pulse XGM pulse energy (J)
+    out['pulse_energy'] = load_pulse_energy(dc, a_train, a_pulse)
 
     # 5) Photon wavelength from undulator (control source, per-train scalar in keV).
     # sc.e converts eV → J, so multiply by 1e3 to go from keV → J.
@@ -551,6 +581,9 @@ def write_initial_file(args, ev, indices, proposal, start_time, sample_name,
                                    **gz)
         pe.attrs['units'] = 'J'
         pe.attrs['axes'] = 'experiment_identifier'
+        pe.attrs['source'] = XGM_SRC
+        pe.attrs['key'] = 'data.intensityTD'
+        pe.attrs['description'] = PULSE_ENERGY_DESCRIPTION
 
         # Electrospray / aerosol injector parameters, one per-shot column each.
         es_cols = ev.get('electrospray', {})
