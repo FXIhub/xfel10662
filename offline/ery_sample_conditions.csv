@@ -1,0 +1,41 @@
+# Erythrocruorin injection conditions per run range (p010662), reconstructed after
+# the beamtime from the DAMNIT comment column (usr/Shared/amore/runs.sqlite) and
+# the Zulip "Run Log", "Sample Delivery" and "Data Analysis" topics. Chat messages
+# were placed on runs by matching their UTC timestamps to the run start times.
+#
+# Columns (empty = not recorded / unknown):
+#   run_first, run_last          inclusive run range
+#   antifreeze_percent           trehalose ("antifreeze", "t-sugar") in the sample, % as logged
+#   ery_uM                       Ery concentration, uM
+#   calcium_uM                   added Ca2+, uM
+#   backing_pressure_psi         electrospray sample backing pressure ("flow rate"), psi;
+#                                not recorded in the Karabo data
+#   capillary_changed            1 = capillary changed/cleaned at the start of run_first
+#   confidence                   high   = DAMNIT comment and chat agree
+#                                medium = one source, or placed on runs by timestamp
+#                                low    = sources conflict; best guess given, see note
+#   source, note                 free text
+run_first,run_last,antifreeze_percent,ery_uM,calcium_uM,backing_pressure_psi,capillary_changed,confidence,source,note
+12,12,0,2,,,0,high,DAMNIT; Run Log,"no He; 1e9/mL"
+13,13,0,2,,,0,medium,DAMNIT,"aborted while opening the He valve"
+14,23,0,2,,,0,medium,Run Log; DAMNIT,"with He from run 16 (14-15 uncommented); Data Analysis calls 16-23 'unpurified buffer'"
+24,25,0.075,,,,1,medium,Run Log; DAMNIT,"'run 24 +, Ery with antifreeze 0.075 %'; new 30 um capillary"
+26,35,0.075,,,4,0,medium,Run Log; Sample Delivery,"'lower flow rate 4psi' at 21:17 UTC, run 26 started 21:17"
+36,37,0.075,,,6,0,medium,Sample Delivery,"'Flow rate is 6psi now' at 22:05 UTC, run 36 started 22:08"
+38,47,0.05,,,,1,low,Run Log; Sample Delivery; DAMNIT,"'diluting the sample by 5x ... 0.05 %' but 0.075/5 = 0.015; new capillary; run 47 almost empty"
+62,73,0.02,,,,0,medium,Run Log,"'5x diluted Ery. 0.02 % antifreeze'; DMA plot at 07:56 labelled 't-sugar0.01%_4psi'"
+74,76,0.02,,,,0,low,Run Log; DAMNIT,"DAMNIT says '1.67 uM 3psi 0 antifreeze' but chat starts 1.67 uM at run 77 (53 min gap before 77); assumed still 0.02 %"
+77,84,0,1.67,,3,0,high,DAMNIT; Run Log; Sample Delivery,
+85,89,0.02,0.8,,3,0,high,DAMNIT; Run Log,"Sample Delivery lists 84-88"
+90,94,0.02,0.8,,5,0,high,DAMNIT; Run Log,"Sample Delivery lists 89-94"
+95,99,0.02,0.8,,7,0,high,DAMNIT; Run Log; Sample Delivery,
+100,104,0.02,0.8,,9,0,high,DAMNIT; Run Log; Sample Delivery,
+105,109,0.02,0.8,,11,0,high,DAMNIT; Run Log; Sample Delivery,
+110,114,0.02,0.8,,13,0,medium,DAMNIT; Run Log; Sample Delivery,"DAMNIT says 15 psi for run 114; chat says 13 psi for 110-114 and 15 psi from 115"
+115,119,0.02,0.8,,15,1,high,DAMNIT; Run Log; Sample Delivery,"capillary and electrode cleaned; 30 um capillary"
+123,141,0.1,0.8,400,15,0,low,DAMNIT; Run Log; Sample Delivery,"DAMNIT and Run Log say 0.1 %, Sample Delivery says 0.2 % t-sugar"
+142,159,0.4,0.8,400,15,0,high,DAMNIT; Run Log; Sample Delivery,
+160,160,0.4,0.8,400,16,0,medium,Sample Delivery,"'Injecting at 16PSI from run 160'"
+161,167,0.4,0.8,400,15,1,medium,Sample Delivery,"electrode cleaned, capillary changed, back to 15 psi at 19:14 UTC (run 161 started 19:12)"
+168,194,0.8,0.8,400,15,1,high,DAMNIT; Run Log; Sample Delivery,"capillary cleaned; run 194 stopped early"
+195,242,0.4,0.8,400,5,0,medium,DAMNIT; Run Log,"freshly loaded sample; pressure only in DAMNIT comments"

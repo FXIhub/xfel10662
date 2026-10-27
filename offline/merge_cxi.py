@@ -67,6 +67,19 @@ The per-event beam fluence (run_emc_fluence.py: result_2/w_d and
 source_1/fluence_sizing in photons/m^2, -1 == not sized) is carried through the
 same way -- concatenated in run order with the -1 sentinel filling runs without it.
 
+Sample conditions (--conditions)
+--------------------------------
+An optional CSV of per-run-range injection conditions (e.g.
+ery_sample_conditions.csv; '#' lines are comments) is broadcast to per-event
+columns, NaN where a value is unknown or a run has no row:
+    sample_1/antifreeze_concentration            %    antifreeze_percent
+    sample_1/concentration                       uM   ery_uM
+    sample_1/calcium_concentration               uM   calcium_uM
+    electrospray/sample_backing_pressure         psi  backing_pressure_psi
+plus sample_1/conditions_index (row of the table for each event, -1 = none) and
+sample_1/conditions_table (the CSV text verbatim, so confidence/source/notes
+travel with the data).
+
 Usage
 -----
     python merge_cxi.py --list                 # list samples and their runs
@@ -74,9 +87,11 @@ Usage
     python merge_cxi.py --all                  # merge every sample group
     python merge_cxi.py --runs 12 13 17        # merge an explicit list of runs
     python merge_cxi.py "Sample" -o out.cxi    # explicit output path
+    python merge_cxi.py Erythrocruorin --conditions ery_sample_conditions.csv
 """
 
 import argparse
+import csv
 import datetime
 import glob
 import os
@@ -105,6 +120,24 @@ FIRST_RUN_DET = ('module_identifier', 'xyz_map', 'mask', 'distance',
                  'x_pixel_size', 'y_pixel_size', 'description')
 
 GZ = dict(compression='gzip', compression_opts=1, shuffle=True)
+
+# --conditions CSV column -> (group under entry_1, dataset, units, description)
+CONDITION_COLS = {
+    'antifreeze_percent': (
+        'sample_1', 'antifreeze_concentration', '%',
+        'trehalose ("antifreeze") concentration of the injected sample, as logged '
+        'during the beamtime; NaN = not recorded'),
+    'ery_uM': (
+        'sample_1', 'concentration', 'uM',
+        'protein concentration of the injected sample; NaN = not recorded'),
+    'calcium_uM': (
+        'sample_1', 'calcium_concentration', 'uM',
+        'added Ca2+ concentration of the injected sample; NaN = not recorded'),
+    'backing_pressure_psi': (
+        'instrument_1/electrospray', 'sample_backing_pressure', 'psi',
+        'electrospray sample backing pressure (sets the liquid flow rate), from '
+        'the beamtime logs, not a recorded readback; NaN = not recorded'),
+}
 
 
 def get_proposal_from_prefix():
@@ -166,7 +199,7 @@ def _per_event_col(f, path, n, dtype):
     return np.full(n, -1, dtype)
 
 
-def write_result_group(entry, name, res):
+def write_result_group(entry, name, res, program='merge_cxi.py'):
     """Write a merged analysis-result group: result_1 (classification, the
     most-likely class id per event) or result_2 (sizing, the per-event size
     scale [x,y,z] plus class_index/scale_index). The per-event columns are
@@ -191,7 +224,7 @@ def write_result_group(entry, name, res):
         g.create_dataset('scale_unique', data=meta['scale_unique'])
     g['detector_1'] = h5py.SoftLink('/entry_1/instrument_1/detector_1')
     proc = g.create_group('process_1')
-    proc['program'] = 'merge_cxi.py'
+    proc['program'] = program
     proc['command'] = ' '.join(sys.argv)
     proc['date'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
     proc['note'] = (f'merged {name}: per-event columns concatenated from the '
@@ -475,6 +508,54 @@ def scan_inputs(files):
     )
 
 
+def load_conditions(path):
+    """Read a sample-conditions CSV ('#' lines are comments). Returns (text, rows)."""
+    with open(path) as fh:
+        text = fh.read()
+    rows = list(csv.DictReader(l for l in text.splitlines()
+                               if l.strip() and not l.lstrip().startswith('#')))
+    return text, rows
+
+
+def conditions_per_event(rows, run_col):
+    """Broadcast the per-run-range condition rows onto the events' run numbers.
+    Returns {csv column: (Nevents,) float32} and the per-event row index (-1 if
+    the event's run has no row)."""
+    index = np.full(len(run_col), -1, np.int16)
+    for i, row in enumerate(rows):
+        m = (run_col >= int(row['run_first'])) & (run_col <= int(row['run_last']))
+        if (index[m] >= 0).any():
+            raise RuntimeError(f'conditions row {i} overlaps an earlier row')
+        index[m] = i
+    missing = np.unique(run_col[index < 0])
+    if missing.size:
+        print(f'warning: no conditions row for run(s) {missing.tolist()}; NaN')
+    cols = {}
+    for k in CONDITION_COLS:
+        vals = np.array([float(r[k]) if r[k].strip() else np.nan for r in rows]
+                        + [np.nan], np.float32)
+        cols[k] = vals[index]       # index -1 picks the trailing NaN
+    return cols, index
+
+
+def write_conditions(entry, cond):
+    """Per-event sample conditions + the source table (see CONDITION_COLS)."""
+    sgrp = entry['sample_1']
+    for k, (grp, name, units, desc) in CONDITION_COLS.items():
+        g = entry.require_group(grp)
+        d = g.create_dataset(name, data=cond['cols'][k], **GZ)
+        d.attrs['units'] = units
+        d.attrs['axes'] = 'experiment_identifier'
+        d.attrs['description'] = desc
+    d = sgrp.create_dataset('conditions_index', data=cond['index'], **GZ)
+    d.attrs['axes'] = 'experiment_identifier'
+    d.attrs['description'] = 'row of conditions_table for this event (-1 = none)'
+    d = sgrp.create_dataset('conditions_table', data=cond['text'])
+    d.attrs['file_name'] = os.path.basename(cond['path'])
+    d.attrs['description'] = ('per-run-range injection conditions (CSV), with the '
+                              'confidence, source and notes for each row')
+
+
 def copy_frames(out_file, paths, nevents, frame_shape, block=256):
     """Stream the per-run `data` blocks into the merged dataset at running offset."""
     with h5py.File(out_file, 'a') as g:
@@ -527,7 +608,7 @@ def write_merged(out_file, sample, info, proposal):
             d.attrs['units'] = 'photons/m^2'
             d.attrs['axes']  = 'experiment_identifier'
 
-        if info['es']:
+        if info['es'] or info.get('conditions'):
             es = instrument.create_group('electrospray')
             es.attrs['NX_class'] = 'NXcollection'
             es['experiment_identifier'] = h5py.SoftLink(
@@ -605,6 +686,9 @@ def write_merged(out_file, sample, info, proposal):
         dgrp.attrs['NX_class'] = 'NXdata'
         dgrp['data'] = h5py.SoftLink('/entry_1/instrument_1/detector_1/data')
 
+        if info.get('conditions'):
+            write_conditions(entry, info['conditions'])
+
         # carry through the merged classification / sizing results
         if info['result_1'] is not None:
             write_result_group(entry, 'result_1', info['result_1'])
@@ -612,11 +696,16 @@ def write_merged(out_file, sample, info, proposal):
             write_result_group(entry, 'result_2', info['result_2'])
 
 
-def merge_sample(sample, files, output, proposal):
+def merge_sample(sample, files, output, proposal, conditions=None):
     runs = [r for r, _ in files]
     print(f'\nmerging sample {sample!r}: runs {runs} -> {output}')
     info = scan_inputs(files)
     extras = []
+    if conditions:
+        text, rows = load_conditions(conditions)
+        cols, index = conditions_per_event(rows, info['run'])
+        info['conditions'] = dict(cols=cols, index=index, text=text, path=conditions)
+        extras.append('sample conditions')
     if info['data_white'] is not None:
         extras.append('background merged')
     if info['result_1'] is not None:
@@ -647,6 +736,9 @@ def main():
                         'selecting by sample name (the sample name of the first '
                         'run is used; a warning is printed if the runs disagree)')
     p.add_argument('-o', '--output', help='output CXI path (single sample only)')
+    p.add_argument('-c', '--conditions', metavar='CSV',
+                   help='per-run-range sample conditions to add as per-event '
+                        'columns (e.g. ery_sample_conditions.csv)')
     p.add_argument('-d', '--dir', default=SAVED_HITS_DIR,
                    help=f'directory of r####_hits.cxi files (default {SAVED_HITS_DIR})')
     args = p.parse_args()
@@ -664,8 +756,8 @@ def main():
     proposal = get_proposal_from_prefix()
 
     if args.all:
-        if args.output or args.runs or args.sample:
-            sys.exit('--all cannot be combined with --output/--runs/sample')
+        if args.output or args.runs or args.sample or args.conditions:
+            sys.exit('--all cannot be combined with --output/--runs/sample/--conditions')
         for name in sorted(groups):
             out = os.path.join(args.dir, f'{safe_name(name)}_merged.cxi')
             merge_sample(name, groups[name], out, proposal)
@@ -692,7 +784,7 @@ def main():
         out = args.output or os.path.join(
             args.dir, f'{safe_name(sample)}_r{"-".join(str(r) for r, _ in files)}'
                       f'_merged.cxi')
-        merge_sample(sample, files, out, proposal)
+        merge_sample(sample, files, out, proposal, args.conditions)
         return
 
     if not args.sample:
@@ -702,7 +794,7 @@ def main():
                  f'{sorted(groups)}')
     out = args.output or os.path.join(
         args.dir, f'{safe_name(args.sample)}_merged.cxi')
-    merge_sample(args.sample, groups[args.sample], out, proposal)
+    merge_sample(args.sample, groups[args.sample], out, proposal, args.conditions)
 
 
 if __name__ == '__main__':

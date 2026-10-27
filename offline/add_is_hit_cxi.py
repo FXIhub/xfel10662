@@ -15,6 +15,16 @@ REQUIRED_DATASETS = {
 }
 
 
+def is_good_hit(cid, scale_d, hit_score, hit_score_threshold=500., size_min=0.7,
+                size_max=1.2, good_classes=(0, 1, 2, 3, 4, 5, 6)):
+    """A frame is a "good hit" if it is in a good class, its fitted size scale is
+    within [size_min, size_max] along all three axes, and its hit_score_mask
+    clears the threshold. Vectorised so this stays a few-millisecond operation."""
+    in_class = np.isin(cid, good_classes)
+    in_size  = np.all((scale_d >= size_min) & (scale_d <= size_max), axis=1)
+    above_score = hit_score > hit_score_threshold
+    return (in_class & in_size & above_score).astype(bool)
+
 def add_is_hit_cxi(cxi_file, hit_score_threshold = 500., size_min = 0.7, size_max = 1.2, good_classes = [0, 1, 2, 3, 4, 5, 6]):
     with h5py.File(cxi_file) as f:
         # Fail early and clearly if the upstream classification/sizing results
@@ -32,13 +42,8 @@ def add_is_hit_cxi(cxi_file, hit_score_threshold = 500., size_min = 0.7, size_ma
         scale_d = f[REQUIRED_DATASETS['size scale']][()]
         hit_score = f[REQUIRED_DATASETS['hit_score_mask']][()]
 
-    # A frame is a "good hit" if it is in a good class, its fitted size scale is
-    # within [size_min, size_max] along all three axes, and its hit_score_mask
-    # clears the threshold. Vectorised so this stays a few-millisecond operation.
-    in_class = np.isin(cid, good_classes)
-    in_size  = np.all((scale_d >= size_min) & (scale_d <= size_max), axis=1)
-    above_score = hit_score > hit_score_threshold
-    is_hit_g = (in_class & in_size & above_score).astype(bool)
+    is_hit_g = is_good_hit(cid, scale_d, hit_score, hit_score_threshold,
+                           size_min, size_max, good_classes)
 
     # Powder: per-pixel sum of the good-hit frames only. Streamed in blocks so the
     # full (Nevents, NMODULES, ss, fs) data stack is never held in memory at once.
