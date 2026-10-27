@@ -168,6 +168,31 @@ def run_and_check_logs(name, run_no, proposal_path):
     else:
         return run_slurm_script_as_bash(vds_slurm_script, run_no)
 
+def is_beta_sample(sample_name):
+    """True if a run's myMdC sample name is the beta sample. The beta runs in
+    p010662 are recorded as 'Beta-galactosidase' (modelled by beta_6cvm.h5);
+    most runs are 'Erythrocruorin' (Ery) and return False. The match is a
+    case-insensitive 'beta' substring -- among the proposal's sample names
+    (Erythrocruorin, No Sample, Silver Behenate, Beta-galactosidase) only the
+    beta sample matches. Adjust here if myMdC uses a different name."""
+    return sample_name is not None and 'beta' in str(sample_name).lower()
+
+def sizing_pipeline_name(sample_name):
+    """Sizing pipeline for a run: 'sizing_beta' (submit_sizing_beta.sh,
+    beta_6cvm.h5) for beta samples, 'sizing' (submit_sizing.sh, Ery_075nm.h5)
+    otherwise. The name selects submit_<name>.sh and the
+    scratch/log/<name>-<run>.out logfile via run_and_check_logs(); both
+    pipelines write into scratch/sizing/r<run>/ so everything downstream is
+    unchanged."""
+    return 'sizing_beta' if is_beta_sample(sample_name) else 'sizing'
+
+def sizing_reference_model(sample_name):
+    """3D reference model in scratch/models/ for a run's sample, matching the
+    model the sizing submit script symlinks as class_model_0.h5: beta_6cvm.h5
+    for beta samples, Ery_075nm.h5 otherwise. Used for the powder radial-profile
+    overlay."""
+    return 'beta_6cvm.h5' if is_beta_sample(sample_name) else 'Ery_075nm.h5'
+
 # Run metadata
 
 @Variable(title="Trains")
@@ -454,12 +479,17 @@ def make_classification(run, run_no: "meta#run_number", proposal_path: "meta#pro
 @Variable(title="Sizing", data="proc")
 def make_sizing(run, run_no: "meta#run_number",
                              proposal_path: "meta#proposal_path",
+                             run_sample: "mymdc#sample_name",
                              class_state: "var#make_cxi"):
-    """2D histogram of most-likely class assignments. Loaded from
-    offline/make_sizing_histogram.py so the CLI script and the DAMNIT cell share one
-    implementation. Also drops a PNG next to iteration_info.h5 for offline
-    viewing/transfer."""
-    if run_and_check_logs('sizing', run_no, proposal_path):
+    """2D histogram of most-likely class assignments. The sizing EMC job is
+    selected from the myMdC sample name (see sizing_pipeline_name): 'beta'
+    samples run submit_sizing_beta.sh (beta_6cvm.h5), everything else runs the
+    default submit_sizing.sh (Ery_075nm.h5). Both write into scratch/sizing/
+    r<run>/, so the histogram is loaded the same way from
+    offline/make_sizing_histogram.py (shared with the CLI script). Also drops a
+    PNG next to iteration_info.h5 for offline viewing/transfer."""
+    name = sizing_pipeline_name(run_sample)
+    if run_and_check_logs(name, run_no, proposal_path):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
             "make_sizing_histogram", OFFLINE_DIR / "make_sizing_histogram.py")
@@ -468,7 +498,8 @@ def make_sizing(run, run_no: "meta#run_number",
 
         cxi_file = proposal_path / "scratch" / "saved_hits" / f"r{run_no:04d}_hits.cxi"
 
-        fig = mod.make_sizing_histogram(cxi_file, run_no)
+        sample_label = 'beta (6cvm)' if name == 'sizing_beta' else 'Ery 0.75 nm'
+        fig = mod.make_sizing_histogram(cxi_file, run_no, sample_label)
 
         # write figure to sizing folder
         directory = proposal_path / "scratch" / "sizing" / f"r{run_no:04d}"
@@ -501,13 +532,16 @@ def good_hits(run, run_no: "meta#run_number",
 @Variable(title="Powder radial profile", data="proc")
 def powder_radial_profile(run, run_no: "meta#run_number",
                           proposal_path: "meta#proposal_path",
+                          run_sample: "mymdc#sample_name",
                           good_hits_state: "var#good_hits"):
     """Azimuthal average of the good-hit powder vs momentum transfer q, with the
     beamline background (data_white x summed background_weighting over the good
     hits) subtracted, overlaid with the radial profile of the 3D reference model
-    (scratch/models/Ery_075nm.h5) scaled to the powder. Depends on good_hits,
-    which writes detector_1/powder. Shares one implementation with
-    offline/add_powder_radial_profile.py."""
+    scaled to the powder. The reference model is chosen from the myMdC sample
+    name (see sizing_reference_model): scratch/models/beta_6cvm.h5 for beta
+    samples, else Ery_075nm.h5 -- matching the model used by that run's sizing
+    pipeline. Depends on good_hits, which writes detector_1/powder. Shares one
+    implementation with offline/add_powder_radial_profile.py."""
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         "add_powder_radial_profile",
@@ -516,7 +550,7 @@ def powder_radial_profile(run, run_no: "meta#run_number",
     spec.loader.exec_module(mod)
 
     cxi_file   = proposal_path / "scratch" / "saved_hits" / f"r{run_no:04d}_hits.cxi"
-    model_file = proposal_path / "scratch" / "models" / "Ery_075nm.h5"
+    model_file = proposal_path / "scratch" / "models" / sizing_reference_model(run_sample)
 
     q_p, P, raw, background, q_m, M = mod.add_powder_radial_profile(cxi_file, model_file)
     fig = mod.make_powder_profile_figure(q_p, P, raw, background, q_m, M, run_no)
@@ -525,3 +559,31 @@ def powder_radial_profile(run, run_no: "meta#run_number",
     out = proposal_path / "scratch" / "saved_hits" / f"r{run_no:04d}_powder_radial_profile.png"
     fig.savefig(out)
     return fig
+
+@Variable(title="Beam fluence (ph/um^2)", data="proc", summary="mean")
+def fluence(run, run_no: "meta#run_number",
+            proposal_path: "meta#proposal_path",
+            run_sample: "mymdc#sample_name",
+            size_state: "var#make_sizing"):
+    """Per-event incident beam fluence (photons/um^2) from the sizing
+    reconstruction. submit_fluence.sh -> run_emc_fluence.py reuses this run's
+    sizing working dir (the logR matrix from make_sizing), re-fits a
+    background-aware per-frame fluence weight w_d, and writes
+    source_1/fluence_sizing (photons/m^2) back into the hit CXI; here we read it
+    back and report the per-run mean. Only defined for the Ery sample (the
+    Ery_075nm.h5 model + |F|^2 pickle); beta runs are skipped. Depends on
+    make_sizing so the logR matrix it reuses is already in place."""
+    import h5py
+    if is_beta_sample(run_sample):
+        raise Skip("fluence is only defined for the Ery sample (Ery_075nm.h5 model)")
+    if run_and_check_logs('fluence', run_no, proposal_path):
+        cxi_file = proposal_path / "scratch" / "saved_hits" / f"r{run_no:04d}_hits.cxi"
+        key = 'entry_1/instrument_1/source_1/fluence_sizing'
+        with h5py.File(cxi_file) as f:
+            if key not in f:
+                raise Skip("no fluence_sizing in CXI")
+            flu = f[key][()]
+        flu = flu[flu >= 0] * 1e-12   # photons/m^2 -> photons/um^2
+        if flu.size == 0:
+            raise Skip("no sized events with a fluence")
+        return flu

@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.transforms as transforms
 import numpy as np
 
-def make_sizing_histogram(cxi_file, run='?'):
+def make_sizing_histogram(cxi_file, run='?', sample='Ery 0.75 nm'):
     with h5py.File(cxi_file) as f:
         frames = f['entry_1/result_2/frames'][()]
         # scale_index_d = f['entry_1/result_2/scale_index'][frames]
@@ -41,7 +41,7 @@ def make_sizing_histogram(cxi_file, run='?'):
 
     ax.set_xlabel('scale z')
     ax.set_ylabel('scale x,y')
-    ax.set_title(f'Ery 0.75 nm size histogram run {run}')
+    ax.set_title(f'{sample} size histogram run {run}')
 
     ax.spines[['right', 'top']].set_visible(False)
 

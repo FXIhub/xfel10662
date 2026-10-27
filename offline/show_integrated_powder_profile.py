@@ -170,6 +170,16 @@ def load_sample_groups():
     return merge_cxi.group_by_sample(merge_cxi.SAVED_HITS_DIR), merge_cxi.SAVED_HITS_DIR
 
 
+def model_for_sample(sample_name, prefix):
+    """Reference model in scratch/models/ for a sample, matching the model used
+    by that sample's sizing pipeline: beta_6cvm.h5 for the beta
+    (beta-galactosidase) sample, else Ery_075nm.h5. Mirrors
+    DAMNIT/context.py:sizing_reference_model()."""
+    is_beta = sample_name is not None and 'beta' in str(sample_name).lower()
+    fname = 'beta_6cvm.h5' if is_beta else 'Ery_075nm.h5'
+    return f'{prefix}scratch/models/{fname}'
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description='Show the good-hit powder radial profile integrated over '
@@ -183,8 +193,9 @@ def parse_args():
     p.add_argument('--list-samples', action='store_true',
                    help='list available sample names and their runs, then exit')
     p.add_argument('-m', '--model',
-                   help='3D model h5 to overlay (default scratch/models/Ery_075nm.h5; '
-                        'pass "none" to skip)')
+                   help='3D model h5 to overlay (default: the selected sample\'s '
+                        'model -- beta_6cvm.h5 for the beta sample, else '
+                        'Ery_075nm.h5; pass "none" to skip)')
     p.add_argument('--sb-ratio', type=float, default=0.6,
                    help='mark the resolution where signal/background falls through '
                         'this value (default 0.6; needs the bg subtraction)')
@@ -232,7 +243,14 @@ def parse_args():
 
     if args.model is None:
         from constants import PREFIX
-        args.model = f'{PREFIX}scratch/models/Ery_075nm.h5'
+        # Default the reference model to the selected sample's model when the
+        # selection is a single --sample (e.g. the beta sample -> beta_6cvm.h5);
+        # otherwise fall back to Ery. Pass --model to override, --model none to
+        # skip the overlay.
+        if len(args.sample) == 1 and not args.runs and not args.cxi:
+            args.model = model_for_sample(args.sample[0], PREFIX)
+        else:
+            args.model = f'{PREFIX}scratch/models/Ery_075nm.h5'
     elif args.model.lower() == 'none':
         args.model = None
     return args

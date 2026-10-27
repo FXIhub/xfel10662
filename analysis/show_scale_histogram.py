@@ -23,6 +23,7 @@ Usage:
     python show_scale_histogram.py                       # all r####_hits.cxi
     python show_scale_histogram.py 12 13 14              # only these runs
     python show_scale_histogram.py 12 13 --title "Ery 0.75 nm"
+    python show_scale_histogram.py --sample Beta-galactosidase  # only that sample
 """
 
 import os
@@ -41,6 +42,16 @@ out_1d = f'{PREFIX}/scratch/log/scale_histogram.pdf'
 out_2d = f'{PREFIX}/scratch/log/scale_histogram_2d.pdf'
 
 RESULT = 'entry_1/result_2'
+SAMPLE = 'entry_1/sample_1/name'
+
+
+def sample_of(f):
+    """Sample name from an open CXI (sample_1/name), or None if absent."""
+    if SAMPLE not in f:
+        return None
+    v = f[SAMPLE][()]
+    return v.decode() if isinstance(v, bytes) else str(v)
+
 
 parser = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -48,9 +59,14 @@ parser.add_argument('runs', type=int, nargs='*',
                     help='run numbers to include (default: all)')
 parser.add_argument('--title', default=None,
                     help='override the plot title (applied to both figures)')
+parser.add_argument('--sample', action='append', default=[],
+                    help='only include runs whose CXI sample_1/name matches '
+                         '(repeatable). Without it (and without run numbers) all '
+                         'runs are merged, mixing samples.')
 args = parser.parse_args()
 
 wanted = set(args.runs)
+want_samples = set(args.sample)
 
 fnams = sorted(glob.glob(f'{PREFIX}/scratch/saved_hits/r[0-9][0-9][0-9][0-9]_hits.cxi'))
 
@@ -59,6 +75,7 @@ all_xy   = []   # scale_xy for every sized frame, all runs (for the 2D plot)
 all_z    = []   # scale_z  for every sized frame, all runs (for the 2D plot)
 n_total = 0
 n_boundary = 0
+samples_seen = set()   # distinct sample_1/name across the contributing runs
 avg_step = None      # spacing of the discrete average values (grid step / 2)
 xy_vals = z_vals = None   # the search grid (assumed shared across runs)
 
@@ -71,6 +88,9 @@ for fnam in tqdm(fnams):
         with h5py.File(fnam) as f:
             if f'{RESULT}/frames' not in f:
                 continue
+            sample = sample_of(f)
+            if want_samples and sample not in want_samples:
+                continue
             frames       = f[f'{RESULT}/frames'][()]
             scale_d      = f[f'{RESULT}/data'][()][frames]      # (N, 3) -> [x, y, z]
             scale_unique = f[f'{RESULT}/scale_unique'][()]      # grid combos
@@ -81,6 +101,8 @@ for fnam in tqdm(fnams):
 
     if len(frames) == 0:
         continue
+
+    samples_seen.add(sample)
 
     scale_xy = scale_d[:, 0]
     scale_z  = scale_d[:, 2]
@@ -121,10 +143,21 @@ all_z    = np.concatenate(all_z)    if all_z    else np.array([])
 print(f'{n_total} sized frames, {n_boundary} on a scale boundary (excluded), '
       f'{len(averages)} kept')
 
+if not wanted and not want_samples and len(samples_seen) > 1:
+    names = ', '.join(sorted(str(s) for s in samples_seen))
+    print(f'WARNING: merged {len(samples_seen)} samples into one histogram '
+          f'({names}); sizing scales are per-particle. Pass --sample NAME or '
+          f'run numbers to separate them.')
+
 if len(averages) == 0:
     raise SystemExit('no sized frames found for the requested runs')
 
-run_suffix = f'\nruns {sorted(wanted)}' if wanted else ''
+sel = []
+if wanted:
+    sel.append(f'runs {sorted(wanted)}')
+if want_samples:
+    sel.append(', '.join(sorted(want_samples)))
+run_suffix = ('\n' + '; '.join(sel)) if sel else ''
 
 
 # ---- 1D: average scale factor ------------------------------------------------

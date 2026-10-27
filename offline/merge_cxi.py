@@ -51,6 +51,22 @@ run by make_cxi_file.py) is concatenated like any other score column. The scalar
 add_background_cxi.py) is merged by averaging across runs, matching the per-pixel
 mean used for data_white itself.
 
+Analysis results (classification + sizing) are carried through
+--------------------------------------------------------------
+The per-run EMC outputs written back into each hit CXI -- classification at
+entry_1/result_1 (most-likely class id per event) and sizing at entry_1/result_2
+(per-event size scale [x,y,z], plus class_index and scale_index) -- are merged
+like the score columns: the per-event arrays are concatenated in run order, with
+the -1 "event not selected" sentinel filling any run not yet classified/sized,
+and each group's `frames` (selected indices) are re-indexed onto the merged event
+axis. Shared metadata (result_1/class_labels, result_2/scale_unique, the
+descriptions) is taken from the first contributing run. A group is written only
+if at least one input run has it.
+
+The per-event beam fluence (run_emc_fluence.py: result_2/w_d and
+source_1/fluence_sizing in photons/m^2, -1 == not sized) is carried through the
+same way -- concatenated in run order with the -1 sentinel filling runs without it.
+
 Usage
 -----
     python merge_cxi.py --list                 # list samples and their runs
@@ -61,6 +77,7 @@ Usage
 """
 
 import argparse
+import datetime
 import glob
 import os
 import re
@@ -140,6 +157,47 @@ def safe_name(sample):
 
 # ---------------------------------------------------------------------------
 
+def _per_event_col(f, path, n, dtype):
+    """Per-event dataset at `path` (first axis = n events) as `dtype`, or a
+    -1-filled (n,) array when it is absent or has the wrong length -- the same
+    'event not selected' sentinel the per-run EMC writers use."""
+    if path in f and f[path].shape[0] == n:
+        return f[path][()].astype(dtype)
+    return np.full(n, -1, dtype)
+
+
+def write_result_group(entry, name, res):
+    """Write a merged analysis-result group: result_1 (classification, the
+    most-likely class id per event) or result_2 (sizing, the per-event size
+    scale [x,y,z] plus class_index/scale_index). The per-event columns are
+    concatenated across runs (-1 marks events a run did not select), `frames` is
+    re-indexed onto the merged event axis, shared metadata (class_labels /
+    scale_unique / description) comes from the first contributing run, and a
+    detector_1 softlink + process_1 (recording this merge) mirror the per-run
+    layout from run_emc_classification.py / run_emc_sizing.py."""
+    g = entry.create_group(name)
+    meta = res['meta']
+    if 'description' in meta:
+        g['description'] = meta['description']
+    for col_name, col in res['cols'].items():
+        d = g.create_dataset(col_name, data=col, **GZ)
+        d.attrs['axes'] = ('experiment_identifier:coordinate' if col.ndim > 1
+                           else 'experiment_identifier')
+    g.create_dataset('frames', data=res['frames'],
+                     **(GZ if res['frames'].size else {}))
+    if 'class_labels' in meta:
+        g.create_dataset('class_labels', data=meta['class_labels'])
+    if 'scale_unique' in meta:
+        g.create_dataset('scale_unique', data=meta['scale_unique'])
+    g['detector_1'] = h5py.SoftLink('/entry_1/instrument_1/detector_1')
+    proc = g.create_group('process_1')
+    proc['program'] = 'merge_cxi.py'
+    proc['command'] = ' '.join(sys.argv)
+    proc['date'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    proc['note'] = (f'merged {name}: per-event columns concatenated from the '
+                    'per-run CXIs; frames re-indexed onto the merged event axis')
+
+
 def scan_inputs(files):
     """First pass: read per-shot 1D arrays and per-run data_white from every file.
 
@@ -198,6 +256,17 @@ def scan_inputs(files):
     # per-run AGIPD panel geometry, broadcast to per-event below
     geom_runs  = {'corner_position': [], 'basis_vectors': []}
     geom_attrs = {}
+
+    # classification (result_1) / sizing (result_2) per-event results
+    res1 = {'data': []}
+    res2 = {'data': [], 'class_index': [], 'scale_index': [], 'w_d': []}
+    res1_frames, res2_frames = [], []
+    res1_meta, res2_meta = {}, {}
+    have_res1 = have_res2 = False
+
+    # optional per-event sizing fluence (source_1/fluence_sizing); -1 where absent
+    fluence_runs = []
+    have_fluence = False
 
     for i, path in enumerate(tqdm(paths, desc='scanning')):
         with h5py.File(path, 'r') as f:
@@ -274,6 +343,66 @@ def scan_inputs(files):
                 bw_runs.append(np.full(n, np.nan) if bp not in f
                                else f[bp][()].astype(np.float64))
 
+            # classification (result_1) and sizing (result_2) results. The
+            # per-event arrays (length n_events, -1 = event not selected by this
+            # run's EMC job) are concatenated like score columns; a run lacking
+            # the group contributes all -1. `frames` (selected indices) are
+            # offset onto the merged axis after the loop, and shared metadata
+            # (class_labels / scale_unique / descriptions) is kept from the first
+            # contributing run.
+            if ('entry_1/result_1/data' in f
+                    and f['entry_1/result_1/data'].shape[0] == n):
+                have_res1 = True
+                res1['data'].append(f['entry_1/result_1/data'][()].astype(np.int32))
+                res1_frames.append(
+                    f['entry_1/result_1/frames'][()].astype(np.int64)
+                    if 'entry_1/result_1/frames' in f else np.empty(0, np.int64))
+                if 'class_labels' not in res1_meta and 'entry_1/result_1/class_labels' in f:
+                    res1_meta['class_labels'] = f['entry_1/result_1/class_labels'][()]
+                if 'description' not in res1_meta and 'entry_1/result_1/description' in f:
+                    res1_meta['description'] = f['entry_1/result_1/description'][()]
+            else:
+                res1['data'].append(np.full(n, -1, np.int32))
+                res1_frames.append(np.empty(0, np.int64))
+
+            if ('entry_1/result_2/data' in f
+                    and f['entry_1/result_2/data'].shape[0] == n):
+                have_res2 = True
+                res2['data'].append(f['entry_1/result_2/data'][()].astype(np.float32))
+                res2['class_index'].append(
+                    _per_event_col(f, 'entry_1/result_2/class_index', n, np.int32))
+                res2['scale_index'].append(
+                    _per_event_col(f, 'entry_1/result_2/scale_index', n, np.int32))
+                res2_frames.append(
+                    f['entry_1/result_2/frames'][()].astype(np.int64)
+                    if 'entry_1/result_2/frames' in f else np.empty(0, np.int64))
+                if 'scale_unique' not in res2_meta and 'entry_1/result_2/scale_unique' in f:
+                    res2_meta['scale_unique'] = f['entry_1/result_2/scale_unique'][()]
+                if 'description' not in res2_meta and 'entry_1/result_2/description' in f:
+                    res2_meta['description'] = f['entry_1/result_2/description'][()]
+            else:
+                res2['data'].append(np.full((n, 3), -1, np.float32))
+                res2['class_index'].append(np.full(n, -1, np.int32))
+                res2['scale_index'].append(np.full(n, -1, np.int32))
+                res2_frames.append(np.empty(0, np.int64))
+
+            # w_d (per-frame fluence weight, run_emc_fluence.py) sits in result_2
+            # alongside the sizing scale; read it independently (-1 fill when
+            # absent) so a run can carry fluence with or without the scale data.
+            if ('entry_1/result_2/w_d' in f
+                    and f['entry_1/result_2/w_d'].shape[0] == n):
+                have_res2 = True
+            res2['w_d'].append(
+                _per_event_col(f, 'entry_1/result_2/w_d', n, np.float64))
+
+            # per-event incident fluence (source_1/fluence_sizing)
+            fp = 'entry_1/instrument_1/source_1/fluence_sizing'
+            if fp in f and f[fp].shape[0] == n:
+                have_fluence = True
+                fluence_runs.append(f[fp][()].astype(np.float64))
+            else:
+                fluence_runs.append(np.full(n, -1.0))
+
     nevents = np.asarray(nevents)
     total   = int(nevents.sum())
 
@@ -282,6 +411,21 @@ def scan_inputs(files):
     cols_score = {k: np.concatenate(v) for k, v in score.items()}
     cols_es    = {k: np.concatenate(v) for k, v in es.items()}
     run_col = np.repeat(np.asarray(runs, np.uint16), nevents)
+
+    # offset each run's selected `frames` onto the merged event axis and
+    # concatenate the per-event result columns (only when some run had them)
+    offsets = np.cumsum(nevents) - nevents
+    res1_info = res2_info = None
+    if have_res1:
+        res1_info = dict(
+            cols={k: np.concatenate(v) for k, v in res1.items()},
+            frames=np.concatenate([fr + off for fr, off in zip(res1_frames, offsets)]),
+            meta=res1_meta)
+    if have_res2:
+        res2_info = dict(
+            cols={k: np.concatenate(v) for k, v in res2.items()},
+            frames=np.concatenate([fr + off for fr, off in zip(res2_frames, offsets)]),
+            meta=res2_meta)
 
     # per-event panel geometry: broadcast each run's array to its events. A run
     # whose file lacks the geometry falls back to the first run that has it.
@@ -326,6 +470,8 @@ def scan_inputs(files):
         first_det=first_det, geom=geom_cols, geom_attrs=geom_attrs,
         data_white=data_white, background_weighting=background_weighting,
         scalar_score=scalar_score, powder=powder,
+        result_1=res1_info, result_2=res2_info,
+        fluence=np.concatenate(fluence_runs) if have_fluence else None,
     )
 
 
@@ -372,6 +518,13 @@ def write_merged(out_file, sample, info, proposal):
             d = source.create_dataset(k, data=info['cols'][k].astype(np.float32),
                                       **GZ)
             d.attrs['units'] = units
+            d.attrs['axes']  = 'experiment_identifier'
+
+        # per-event sizing fluence (run_emc_fluence.py), -1 where not sized
+        if info['fluence'] is not None:
+            d = source.create_dataset('fluence_sizing',
+                                      data=info['fluence'].astype(np.float64), **GZ)
+            d.attrs['units'] = 'photons/m^2'
             d.attrs['axes']  = 'experiment_identifier'
 
         if info['es']:
@@ -452,14 +605,29 @@ def write_merged(out_file, sample, info, proposal):
         dgrp.attrs['NX_class'] = 'NXdata'
         dgrp['data'] = h5py.SoftLink('/entry_1/instrument_1/detector_1/data')
 
+        # carry through the merged classification / sizing results
+        if info['result_1'] is not None:
+            write_result_group(entry, 'result_1', info['result_1'])
+        if info['result_2'] is not None:
+            write_result_group(entry, 'result_2', info['result_2'])
+
 
 def merge_sample(sample, files, output, proposal):
     runs = [r for r, _ in files]
     print(f'\nmerging sample {sample!r}: runs {runs} -> {output}')
     info = scan_inputs(files)
+    extras = []
+    if info['data_white'] is not None:
+        extras.append('background merged')
+    if info['result_1'] is not None:
+        extras.append('classification')
+    if info['result_2'] is not None:
+        extras.append('sizing')
+    if info['fluence'] is not None:
+        extras.append('fluence')
     print(f'  {len(files)} runs, {info["total"]} total shots, '
           f'frame {info["frame_shape"]}'
-          f'{", background merged" if info["data_white"] is not None else ""}')
+          f'{(", " + ", ".join(extras)) if extras else ""}')
     write_merged(output, sample, info, proposal)
     copy_frames(output, info['paths'], info['nevents'], info['frame_shape'])
     print(f'  wrote {output}')
