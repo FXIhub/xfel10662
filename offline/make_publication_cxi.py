@@ -10,10 +10,22 @@ per-run hit files, their metadata sidecars and the sample-conditions table:
     python make_publication_cxi.py --conditions ery_sample_conditions.csv
     python make_publication_cxi.py --sample Erythrocruorin --conditions ery_sample_conditions.csv -o out.cxi
 
-Every event of every run is included (the per-run files hold the facility hit
-finder's hits); score/is_hit marks the analysis "good hits". The layout follows
+The per-run files hold the facility hit finder's hits. Many of those are misses
+triggered by a flaring ASIC outside the analysis mask (module 4, tile 4, left
+half), so only events with a background-subtracted hit_score_mask above
+--hit-score-mask-net-min (default 30 photons) are written:
+
+    hit_score_mask - background_weighting * hit_score_mask_data_white[background_index] > 30
+
+(misses peak at about -7 with sd about 12; the gap to the hits is at 25-30).
+score/is_hit marks the analysis "good hits" among them. The layout follows
 the p7927 publication file (xfel7927/offline/make_publication_cxi.py). N is the
-number of events, Nb the number of runs (one background per run).
+number of events written, Nb the number of runs (one background per run).
+
+The per-frame gain stage comes from the per-run VDS ({PREFIX}scratch/vds/r{run:04d}.cxi,
+at vds_index): pixels that switched out of high gain have unreliable photon counts
+in the facility correction (they read far below their neighbours), so they are
+flagged per frame in detector_1/mask_frame.
 
     /
       cxi_version = 160
@@ -48,7 +60,8 @@ number of events, Nb the number of runs (one background per run).
             xyz_map             (3, 128, 64, 128) float32 m        pixel centres, same geometry
             quadrant            (4,)            string
             mask                (128, 64, 128)  uint32             CXI mask bits, see bit_definitions
-            data                (N, 128, 64, 128) uint8  counts    photons per pixel (per-cell masked)
+            data                (N, 128, 64, 128) uint8  counts    photons per pixel
+            mask_frame          (N, 128, 64, 128) uint8            1 = pixel not in high gain in this frame
             powder              (128, 64, 128)  float32  counts    mean of data over all events
             start_time, run, trainId, cellId, pulseId, vds_index (N,)
             data_white          (Nb, 128, 64, 128) float32 counts  per-run background (mean of non-hit frames)
@@ -94,6 +107,17 @@ REFERENCE_GEOM = 'geom/agipd_p10662_pw_70cm_from_260505.geom'
 
 DET = 'entry_1/instrument_1/detector_1'
 GZ = dict(compression='gzip', compression_opts=1, shuffle=True)
+# per-frame mask: mostly zeros, so gzip 9 (built-in filter, ~1-2 kB/frame, ~1 ms per frame read)
+GZ_MASK = dict(compression='gzip', compression_opts=9)
+
+VDS_FILE = PREFIX + 'scratch/vds/r{run:04d}.cxi'
+VDS_GAIN = '/entry_1/instrument_1/detector_1/gain'
+
+# event selection: background-subtracted photons in the hit-finding mask
+HIT_SCORE_MASK_NET_MIN = 30.
+MASK_FRAME_DESCRIPTION = ('1 = pixel not in high gain in this frame (facility gain stage != 0, from the VDS '
+                          'image.gain): its corrected photon count is unreliable (reads far below its '
+                          'neighbours); 0 = high gain. Use together with detector_1/mask.')
 
 NMODULES, NTILES = 16, 8
 TILE_SHAPE = (64, 128)
@@ -178,6 +202,46 @@ def load_metadata(runs, nevents):
                 data[name][off:off + n] = v
             f.visititems(collect)
     return data, attrs
+
+
+def hit_mask_background(files, nevents):
+    """per-event background photons in the hit-finding mask, from the per-run files:
+    background_weighting * hit_score_mask_data_white (as written by add_background_cxi.py)"""
+    out = []
+    for (run, path), n in zip(files, nevents):
+        with h5py.File(path, 'r') as f:
+            p = f'{DET}/score/hit_score_mask_data_white'
+            if p not in f:
+                sys.exit(f'{path} has no {p}; cannot apply the hit_score_mask selection')
+            bw = f[f'{DET}/background_weighting'][()]
+            assert bw.shape[0] == n
+            out.append(bw.astype(np.float64) * float(f[p][()]))
+    return np.concatenate(out)
+
+
+def select_events(info, meta, keep):
+    """keep only the events where `keep` is True: every per-event column of the
+    scanned inputs and the metadata, with result frames re-indexed"""
+    newidx = np.cumsum(keep) - 1
+    runs_all = info['run']
+    info['run'] = runs_all[keep]
+    for group in ('cols', 'score', 'es'):
+        info[group] = {k: v[keep] for k, v in info[group].items()}
+    if info['fluence'] is not None:
+        info['fluence'] = info['fluence'][keep]
+    for name in ('result_1', 'result_2'):
+        res = info[name]
+        if res is not None:
+            res['cols'] = {k: v[keep] for k, v in res['cols'].items()}
+            fr = res['frames'][keep[res['frames']]]
+            res['frames'] = newidx[fr]
+    for k in meta:
+        meta[k] = meta[k][keep]
+    # per-run event counts after the selection (runs are contiguous blocks)
+    starts = np.cumsum(info['nevents']) - info['nevents']
+    info['keep_per_run'] = [keep[s:s + n] for s, n in zip(starts, info['nevents'])]
+    info['nevents'] = np.array([k.sum() for k in info['keep_per_run']])
+    info['total'] = int(keep.sum())
 
 
 def copy_meta(group, name, meta, meta_attrs, key, **attrs):
@@ -319,6 +383,9 @@ def main():
     p.add_argument('-o', '--output', help='output file (default scratch/saved_hits/<sample>_publication.cxi)')
     p.add_argument('--description', default='Single particle diffraction patterns of erythrocruorin '
                    'recorded with the AGIPD 1M detector at the SPB/SFX instrument of the European XFEL.')
+    p.add_argument('--hit-score-mask-net-min', type=float, default=HIT_SCORE_MASK_NET_MIN,
+                   help='keep events whose background-subtracted hit_score_mask exceeds this '
+                        f'(photons, default {HIT_SCORE_MASK_NET_MIN:g})')
     args = p.parse_args()
 
     files = merge_cxi.group_by_sample(merge_cxi.SAVED_HITS_DIR)[args.sample]
@@ -332,9 +399,20 @@ def main():
 
     # per-event columns, scores, results and fluence, concatenated in run order
     info = merge_cxi.scan_inputs(files)
+    meta, ma = load_metadata(runs, info['nevents'])
+
+    # drop the misses: background-subtracted photons in the hit-finding mask
+    net = info['score']['hit_score_mask'] - hit_mask_background(files, info['nevents'])
+    keep = net > args.hit_score_mask_net_min
+    print(f'selection: hit_score_mask net > {args.hit_score_mask_net_min:g} keeps {keep.sum()} of '
+          f'{keep.size} events')
+    select_events(info, meta, keep)
     N, nevents = info['total'], info['nevents']
     run_col = info['run']
-    meta, ma = load_metadata(runs, nevents)
+    selection = (f'events of the per-run hit files with hit_score_mask - background_weighting * '
+                 f'hit_score_mask_data_white > {args.hit_score_mask_net_min:g} photons '
+                 f'({N} of {keep.size}); removes misses triggered by a flaring ASIC outside the '
+                 'hit-finding mask')
 
     expid = info['cols']['experiment_identifier'].astype(object)
     expid = np.array([e.decode() if isinstance(e, bytes) else e for e in expid], dtype=object)
@@ -413,7 +491,15 @@ def main():
         dst = det.create_dataset('data', shape=(N,) + PANEL_SHAPE, dtype=np.uint8,
                                  chunks=(1,) + PANEL_SHAPE, **GZ)
         dst.attrs.update(axes='experiment_identifier:module_identifier:y:x', signal=1, units='counts',
-                         description='photons per pixel, per-cell masked, not masked with detector_1/mask')
+                         description='photons per pixel, not masked with detector_1/mask or '
+                                     'detector_1/mask_frame', selection=selection)
+        dmf = det.create_dataset('mask_frame', shape=(N,) + PANEL_SHAPE, dtype=np.uint8,
+                                 chunks=(1,) + PANEL_SHAPE, **GZ_MASK)
+        dmf.attrs.update(axes='experiment_identifier:module_identifier:y:x', description=MASK_FRAME_DESCRIPTION)
+        vds_index = info['cols']['vds_index']
+        train_col = info['cols']['trainId']
+        cell_col = info['cols']['cellId']
+        switched = np.empty(N, dtype=np.uint32)
         dw = det.create_dataset('data_white', shape=(len(runs),) + PANEL_SHAPE, dtype=np.float32,
                                 chunks=(1,) + PANEL_SHAPE, **GZ)
         dw.attrs.update(axes='background_run:module_identifier:y:x', units='counts',
@@ -427,19 +513,35 @@ def main():
         bmask_score = np.full(len(runs), np.nan, dtype=np.float32)
         off = 0
         block = 256
-        for b, ((run, path), n) in enumerate(zip(tqdm(files, desc='runs'), nevents)):
-            with h5py.File(path, 'r') as f:
+        for b, ((run, path), n, k) in enumerate(zip(tqdm(files, desc='runs'), nevents, info['keep_per_run'])):
+            sel = np.nonzero(k)[0]          # kept events, indices into this run's file
+            with h5py.File(path, 'r') as f, h5py.File(VDS_FILE.format(run=run), 'r') as v:
                 src = f[f'{DET}/data']
+                gain = v[VDS_GAIN]
+                # the VDS frame at vds_index must be this event
+                vi = vds_index[off:off + n]
+                v_train = v['/entry_1/trainId'][()]
+                v_cell = v['/entry_1/cellId'][:, 0]
+                if not (np.array_equal(v_train[vi], train_col[off:off + n])
+                        and np.array_equal(v_cell[vi], cell_col[off:off + n])):
+                    sys.exit(f'run {run}: VDS trainId/cellId at vds_index disagree with {path}')
                 for s in range(0, n, block):
                     e = min(s + block, n)
-                    frames = to_tiles(src[s:e])
+                    rows = sel[s:e]
+                    frames = to_tiles(np.stack([src[int(r)] for r in rows]))
                     dst[off + s:off + e] = frames
                     powder += frames.sum(0, dtype=np.uint64)
                     photons[off + s:off + e] = frames.reshape(e - s, -1).sum(1)
                     lit[off + s:off + e] = np.count_nonzero(frames.reshape(e - s, -1), axis=1)
+                    # one VDS frame at a time: fancy indexing a VDS is far slower
+                    mf = np.empty((e - s,) + PANEL_SHAPE, dtype=np.uint8)
+                    for j, i in enumerate(vi[s:e]):
+                        mf[j] = to_tiles(gain[int(i)] != 0)
+                    dmf[off + s:off + e] = mf
+                    switched[off + s:off + e] = mf.reshape(e - s, -1).sum(1)
                 W = f[f'{DET}/data_white'][()].astype(np.float32)
                 dw[b] = to_tiles(W)
-                bweight[off:off + n] = f[f'{DET}/background_weighting'][()]
+                bweight[off:off + n] = f[f'{DET}/background_weighting'][()][sel]
                 bcounts[off:off + n] = bweight[off:off + n] * W.sum(dtype=np.float64)
                 p = f'{DET}/score/hit_score_mask_data_white'
                 if p in f:
@@ -464,8 +566,10 @@ def main():
                 continue
             per_event(score, name, col.astype(np.float32), description=SCORE_DESCRIPTIONS.get(name, ''))
         per_event(score, 'is_hit', is_hit, description=IS_HIT_DESCRIPTION)
-        per_event(score, 'photon_counts', photons, description='photons in the frame (per-cell mask applied)')
-        per_event(score, 'lit_pixels', lit, description='pixels with at least one photon (per-cell mask applied)')
+        per_event(score, 'photon_counts', photons, description='photons in the frame')
+        per_event(score, 'lit_pixels', lit, description='pixels with at least one photon')
+        per_event(score, 'gain_switched_pixels', switched,
+                  description='pixels flagged in detector_1/mask_frame (not in high gain) in this frame')
         per_event(score, 'background_counts', bcounts,
                   description='sum over pixels of background_weighting * data_white[background_index]')
         ds = score.create_dataset('hit_score_mask_data_white', data=bmask_score)
@@ -499,8 +603,11 @@ def main():
         process['version'] = git_version()
         process['date'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         process['command'] = command_line()
+        process['selection'] = selection
 
-    print(f'written {output}: {N} events, {len(runs)} runs')
+    print(f'written {output}: {N} events, {len(runs)} runs; '
+          f'{np.count_nonzero(switched)} frames with gain-switched pixels '
+          f'(max {switched.max() if N else 0} per frame, total {switched.sum(dtype=np.int64)})')
 
 
 if __name__ == '__main__':
